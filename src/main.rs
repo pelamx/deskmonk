@@ -12,7 +12,7 @@ use deskmonk::plan::{self, Plan};
 use deskmonk::vault;
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, Margin, Pos2, Rect, RichText, Sense, Stroke,
-    Theme, Ui, vec2,
+    Theme, ThemePreference, Ui, vec2,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -78,6 +78,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| {
             setup_style(&cc.egui_ctx);
+            cc.egui_ctx.set_theme(saved_theme());
             let mut app = App::default();
             app.detect_hardware(cc.egui_ctx.clone());
             #[cfg(target_os = "macos")]
@@ -130,6 +131,41 @@ fn palette(dark: bool) -> (Color32, Color32, Color32, Color32) {
             Color32::from_rgb(226, 229, 236),
             Color32::from_rgb(110, 115, 130),
         )
+    }
+}
+
+/// The theme picked in the app, saved as one word like the language. Both styles are built below;
+/// this only says which one to show, and "system" leaves that to the OS.
+fn theme_path() -> Option<PathBuf> {
+    Some(deskmonk::config_dir()?.join("theme"))
+}
+
+fn saved_theme() -> ThemePreference {
+    let saved = theme_path().and_then(|p| std::fs::read_to_string(p).ok());
+    match saved.as_deref().map(str::trim) {
+        Some("dark") => ThemePreference::Dark,
+        Some("light") => ThemePreference::Light,
+        _ => ThemePreference::System,
+    }
+}
+
+fn save_theme(pref: ThemePreference) {
+    let name = match pref {
+        ThemePreference::Dark => "dark",
+        ThemePreference::Light => "light",
+        ThemePreference::System => "system",
+    };
+    if let Some(path) = theme_path() {
+        let _ = std::fs::create_dir_all(path.parent().unwrap());
+        let _ = std::fs::write(path, name);
+    }
+}
+
+fn theme_name(pref: ThemePreference) -> &'static str {
+    match pref {
+        ThemePreference::Dark => t("🌙 Koyu", "🌙 Dark", "🌙 Oscuro"),
+        ThemePreference::Light => t("☀ Açık", "☀ Light", "☀ Claro"),
+        ThemePreference::System => t("🖥 Sistem", "🖥 System", "🖥 Sistema"),
     }
 }
 
@@ -2257,6 +2293,20 @@ impl eframe::App for App {
                         if lang != i18n::lang() {
                             i18n::set(lang);
                             self.detect_hardware(ctx.clone());
+                        }
+                        ui.add_space(6.0);
+                        let saved = ctx.options(|o| o.theme_preference);
+                        let mut theme = saved;
+                        egui::ComboBox::from_id_salt("theme")
+                            .selected_text(theme_name(theme))
+                            .show_ui(ui, |ui| {
+                                for p in [ThemePreference::System, ThemePreference::Light, ThemePreference::Dark] {
+                                    ui.selectable_value(&mut theme, p, theme_name(p));
+                                }
+                            });
+                        if theme != saved {
+                            ctx.set_theme(theme);
+                            save_theme(theme);
                         }
                         ui.add_space(6.0);
                         let pro_button = if self.plan.is_pro() {

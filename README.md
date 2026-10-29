@@ -60,7 +60,8 @@ cargo build --release -p deskmonk-server
 deskmonk [KLASÖR]   # klasör verilirse açılır açılmaz taranır
 ```
 Kenar çubuğunda kategoriler, üstte klasör seçimi (Gözat… / hızlı klasörler) ve özet kartları bulunur.
-Satıra tıklamak seçer, 📂 ise dosyayı klasöründe gösterir. Açık/koyu tema sistemi izler.
+Satıra tıklamak seçer, 📂 ise dosyayı klasöründe gösterir. Üstteki tema seçicisi **Sistem / Açık / Koyu** sunar:
+sistem seçiliyken işletim sisteminin temasını izler, diğer ikisi seçimi kalıcı olarak saklar.
 macOS'ta pencereyi kapatmak (✕ / Cmd+W) uygulamayı gizler: tarama ve temizleme arka planda sürer, Dock simgesine
 tıklayınca pencere geri gelir. Çıkmak için Cmd+Q veya Dock → Çık.
 Kenar çubuğundaki **Sistem → Donanım** terminal görünümünde bileşenleri markalarıyla (işlemci, bellek, ekran kartı,
