@@ -85,9 +85,10 @@ it is deliberately not attached to the release, because nobody can install an un
 The Store's copy is signed, yours is not, so to install it locally trust your own certificate first:
 
 ```powershell
-$c = New-SelfSignedCertificate -Type Custom -Subject "CN=deskMonk Local Test, O=deskMonk, C=TR" `
+# The Subject must equal the package's Publisher exactly, or the install fails — for a package built
+# with the real identity that is the Partner Center GUID, not a friendly name.
+$c = New-SelfSignedCertificate -Type Custom -Subject "CN=5DBE5688-E229-42F5-8AEF-C3B5308BB590" `
   -KeyUsage DigitalSignature -CertStoreLocation "Cert:\CurrentUser\My" -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3")
-# The Publisher in the test package must match this Subject exactly, or the install fails.
 signtool sign /fd SHA256 /sha1 $c.Thumbprint dist\deskMonk-<version>-x64.msix
 Export-Certificate -Cert $c -FilePath test.cer   # then: import it into LocalMachine\TrustedPeople (admin)
 Add-AppxPackage dist\deskMonk-<version>-x64.msix
