@@ -80,6 +80,28 @@ it is deliberately not attached to the release, because nobody can install an un
 
 4. Submit. Certification is usually hours, but a restricted capability means a human looks at it, so allow days.
 
+## Store art
+
+`packaging/store-art.html` is the source for the Store logos: the site's own monk (`docs/monk.svg`)
+on the site's background, so nothing has to be drawn or kept in sync by hand. Render it with Edge,
+which every Windows machine already has:
+
+```powershell
+$e = "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+$a = "--headless --disable-gpu --hide-scrollbars"
+& $e $a.Split() --screenshot=dist\store\box-1080x1080.png    --window-size=1080,1080 packaging\store-art.html
+& $e $a.Split() --screenshot=dist\store\box-2160x2160.png    --window-size=1080,1080 --force-device-scale-factor=2 packaging\store-art.html
+& $e $a.Split() --screenshot=dist\store\poster-720x1080.png  --window-size=720,1080  packaging\store-art.html
+& $e $a.Split() --screenshot=dist\store\poster-1440x2160.png --window-size=720,1080  --force-device-scale-factor=2 packaging\store-art.html
+```
+
+The 2x renders ask for the same window and a doubled device scale, so the wordmark is drawn at the
+large size rather than upscaled from the small one. 1:1 box art is what a desktop listing shows;
+9:16 poster art is only used on Xbox, which this app does not target.
+
+**Screenshots.** The site's own are in `docs/img/` at 1400×949, over the Store's 1366×768 minimum, but
+the Store takes PNG and those are JPG, so convert rather than take new ones.
+
 ## Test before you submit
 
 The Store's copy is signed, yours is not, so to install it locally trust your own certificate first:

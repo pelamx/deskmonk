@@ -1,0 +1,43 @@
+<!-- Store logos (Partner Center > Store logos). The monk is ../docs/monk.svg, the site's own
+     artwork, on the site's background; nothing here is a second copy of the drawing.
+     Render with Edge, which is on every Windows box — see packaging/msstore.md:
+
+       msedge --headless --screenshot=box-1080.png --window-size=1080,1080 packaging/store-art.html
+
+     Scale 2x for the 2160 sizes with --force-device-scale-factor=2, so the wordmark is drawn at
+     the larger size instead of being an upscale of the small one. -->
+<meta charset="utf-8">
+<title>deskMonk store art</title>
+<style>
+  :root {
+    --bg: #110e20; --text: #f5f1ea; --muted: #b0a9c8; --brand: #6c63ff; --accent: #f28c28;
+  }
+  * { margin: 0; box-sizing: border-box }
+  html, body { width: 100%; height: 100%; overflow: hidden }
+  body {
+    background:
+      radial-gradient(90% 50% at 85% -6%, rgba(108, 99, 255, .30), transparent 60%),
+      radial-gradient(80% 48% at 0% 8%, rgba(242, 140, 40, .12), transparent 55%),
+      var(--bg);
+    color: var(--text);
+    font: 500 16px/1.5 "Segoe UI", -apple-system, Roboto, Helvetica, Arial, sans-serif;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 5vh;
+  }
+  /* Keeps the monk off the exact centre line of a tall poster, which otherwise reads as floating. */
+  .art { position: relative; display: grid; place-items: center }
+  /* The glow sits behind the drawing and is what stops the dark robe from merging into the ground. */
+  .art::before {
+    content: ""; position: absolute; width: 150%; aspect-ratio: 1; border-radius: 50%;
+    background: radial-gradient(circle, rgba(108, 99, 255, .34), transparent 62%);
+  }
+  .art img { position: relative; height: 52vh; filter: drop-shadow(0 4vh 6vh rgba(0, 0, 0, .55)) }
+  .word { position: relative; font-weight: 800; font-size: 9vh; letter-spacing: -.02em; line-height: 1 }
+  .tag { position: relative; font-size: 3vh; color: var(--muted); text-align: center; padding: 0 8vw }
+  /* Box art is square and small on screen: the tagline would be unreadable, so only the poster keeps it. */
+  @media (min-aspect-ratio: 1/1) { .tag { display: none } }
+</style>
+
+<div class="art"><img src="../docs/monk.svg" alt=""></div>
+<div class="word">deskMonk</div>
+<div class="tag">Smart solutions for a calm desk.</div>
