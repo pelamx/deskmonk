@@ -256,6 +256,55 @@ mod tests {
         assert!(!items[5].selected && items[4].selected);
     }
 
+    /// The one path that destroys data, and it had no test: junk must go for good, the user's own
+    /// files must be recoverable from the trash, and a failure must be reported, not counted as freed.
+    #[test]
+    fn deletes_junk_for_good_and_user_files_to_the_trash() {
+        use super::scan::{Category, Item};
+        let dir = std::env::temp_dir().join(format!("deskmonk-del-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let junk = dir.join("cache.tmp");
+        let mine = dir.join(format!("deskmonk-keepsake-{}.txt", std::process::id()));
+        std::fs::write(&junk, vec![b'j'; 10]).unwrap();
+        std::fs::write(&mine, vec![b'm'; 20]).unwrap();
+        let gone = dir.join("already-deleted.tmp");
+
+        let item = |path: &std::path::Path, size, category| Item {
+            path: path.to_path_buf(), size, category, group: 0, selected: true,
+        };
+        let mut items = vec![
+            item(&junk, 10, Category::Junk),
+            item(&mine, 20, Category::Duplicate),
+            item(&gone, 999, Category::Junk),
+        ];
+        let deletion = super::Deletion::start(&mut items, false, || {});
+        assert!(items.is_empty(), "selected items are taken out of the list");
+
+        let finished = (0..100)
+            .find_map(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                deletion.poll()
+            })
+            .expect("the deletion should finish within five seconds");
+
+        assert!(!junk.exists() && !mine.exists(), "both selected files should be gone from disk");
+        // The missing file must be reported, and must not inflate the "space freed" number.
+        assert_eq!(finished.freed, 30, "only the two real files count");
+        assert_eq!(finished.failed.len(), 1);
+        assert_eq!(finished.failed[0].path, gone);
+        assert!(finished.first_error.is_some());
+
+        // Junk is unrecoverable; the user's file is sitting in the trash. Only ours is touched.
+        let listed = trash::os_limited::list().unwrap_or_default();
+        let mut mine_in_trash: Vec<_> = listed
+            .into_iter()
+            .filter(|i| i.name.to_string_lossy().starts_with(&format!("deskmonk-keepsake-{}", std::process::id())))
+            .collect();
+        assert_eq!(mine_in_trash.len(), 1, "the user's own file must be recoverable from the trash");
+        trash::os_limited::purge_all(mine_in_trash.drain(..)).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[cfg(unix)]
     #[test]
     fn removes_read_only_folders() {
