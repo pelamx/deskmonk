@@ -27,7 +27,8 @@ if (-not $name -or -not $publisher) {
   if (-not $name) { $name = "deskMonk.LocalTest" }
   if (-not $publisher) { $publisher = "CN=deskMonk Local Test, O=deskMonk, C=TR" }
 }
-if (-not $publisherDisplay) { $publisherDisplay = "pelamx" }
+# Must match Partner Center's PublisherDisplayName exactly, or the upload is rejected.
+if (-not $publisherDisplay) { $publisherDisplay = "p3l4mx" }
 
 $makeappx = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter makeappx.exe -ErrorAction SilentlyContinue |
   Where-Object { $_.FullName -match '\\(x64|arm64)\\' } | Select-Object -Last 1
