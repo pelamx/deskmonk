@@ -46,7 +46,10 @@ Copy-Item target\release\deskmonk.exe, target\release\deskmonk-tui.exe, README.m
 # Every tile size from the one 1024 px icon. Scale-200 variants are what a high-DPI Start menu
 # actually shows; without them Windows upscales the 100% asset and it looks soft.
 Add-Type -AssemblyName System.Drawing
-$icon = [System.Drawing.Image]::FromFile((Resolve-Path assets\icon.png))
+# icon-1024.png, not icon.png: the same framing, but 1024 px against 256. The largest tile is
+# Square150x150Logo.scale-200 at 300 px, which the 256 px source could only upscale into something
+# soft. Not dock-icon.png, which is the same drawing inside a wide macOS dock margin.
+$icon = [System.Drawing.Image]::FromFile((Resolve-Path assets\icon-1024.png))
 $tiles = @{ "Square44x44Logo" = 44; "Square71x71Logo" = 71; "Square150x150Logo" = 150; "StoreLogo" = 50 }
 foreach ($tile in $tiles.GetEnumerator()) {
   foreach ($scale in 100, 200) {

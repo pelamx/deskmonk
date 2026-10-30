@@ -102,6 +102,13 @@ large size rather than upscaled from the small one. 1:1 box art is what a deskto
 **Screenshots.** The site's own are in `docs/img/` at 1400×949, over the Store's 1366×768 minimum, but
 the Store takes PNG and those are JPG, so convert rather than take new ones.
 
+**App tile icons (300, 150, 71).** The Store uses the package's own tiles unless you upload these, so
+they are optional — upload them only to replace what an older package shipped. `assets/icon-1024.png`
+is the source for both: render it from `assets/logo.svg`, whose rounded square sits at 100..924 of a
+1024 viewBox, so the image is scaled by 1024/824 to fill the canvas the way `assets/icon.png` does.
+Downscale from it with HighQualityBicubic rather than rendering tiny windows: Chromium refuses window
+sizes that small and writes an empty file.
+
 ## Test before you submit
 
 The Store's copy is signed, yours is not, so to install it locally trust your own certificate first:
