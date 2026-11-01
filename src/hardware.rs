@@ -405,30 +405,54 @@ fn linux() -> Vec<Component> {
         if read(&format!("{base}/type")) != "Battery" {
             continue;
         }
-        let health = match (read(&format!("{base}/energy_full")).parse::<f64>(), read(&format!("{base}/energy_full_design")).parse::<f64>()) {
-            (Ok(full), Ok(design)) if design > 0.0 => {
-                let pct = full / design * 100.0;
-                tf!(" · sağlık %{pct:.0}", " · health {pct:.0}%", " · salud {pct:.0}%")
-            }
+        // Batteries report either energy_* or charge_* files.
+        let unit = if read(&format!("{base}/energy_full")).is_empty() { "charge" } else { "energy" };
+        let number = |name: &str| read(&format!("{base}/{unit}_{name}")).parse::<f64>().ok();
+        let (now, full, design) = (number("now"), number("full"), number("full_design"));
+        let health = match percent(full, design) {
+            Some(pct) => tf!(" · sağlık %{pct:.0}", " · health {pct:.0}%", " · salud {pct:.0}%"),
+            None => String::new(),
+        };
+        let cycles = match read(&format!("{base}/cycle_count")).parse::<u32>() {
+            Ok(n) if n > 0 => tf!(" · {n} döngü", " · {n} cycles", " · {n} ciclos"),
             _ => String::new(),
         };
-        let cycles = read(&format!("{base}/cycle_count"));
         parts.push(part(
             "Pil",
             &read(&format!("{base}/manufacturer")),
             read(&format!("{base}/model_name")),
             {
-                let charge = read(&format!("{base}/capacity"));
-                tf!("%{charge} şarj{health} · {cycles} döngü", "{charge}% charged{health} · {cycles} cycles", "{charge}% de carga{health} · {cycles} ciclos")
+                let charge = percent(now, full).or_else(|| percent(read(&format!("{base}/capacity")).parse().ok(), Some(100.0))).unwrap_or(0.0);
+                tf!("%{charge:.0} şarj{health}{cycles}", "{charge:.0}% charged{health}{cycles}", "{charge:.0}% de carga{health}{cycles}")
             },
         ));
     }
     parts
 }
 
+/// `part` as a share of `whole`, at most 100: a battery can report more than its design capacity (104% on a new pack).
+#[cfg(target_os = "linux")]
+fn percent(part: Option<f64>, whole: Option<f64>) -> Option<f64> {
+    match (part, whole) {
+        (Some(part), Some(whole)) if whole > 0.0 => Some((part / whole * 100.0).min(100.0)),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn battery_percentages_stop_at_100() {
+        // A real pack: full, and holding more than its design capacity.
+        assert_eq!(percent(Some(6_652_000.0), Some(6_652_000.0)), Some(100.0));
+        assert_eq!(percent(Some(6_652_000.0), Some(6_400_000.0)), Some(100.0));
+        assert_eq!(percent(Some(3_326_000.0), Some(6_652_000.0)), Some(50.0));
+        assert_eq!(percent(Some(1.0), Some(0.0)), None);
+        assert_eq!(percent(None, Some(1.0)), None);
+    }
 
     #[test]
     fn finds_brands_as_whole_words() {

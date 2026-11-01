@@ -23,10 +23,36 @@ impl Drop for TempFile {
     }
 }
 
+/// Where to test: on a real disk. On Linux the temp folder is often tmpfs, which is RAM: it would report RAM's speed,
+/// and has too little room for the test anyway.
+pub fn test_dir() -> PathBuf {
+    if cfg!(target_os = "linux") {
+        for dir in [dirs::cache_dir(), dirs::home_dir()].into_iter().flatten() {
+            if fs::create_dir_all(&dir).is_ok() {
+                return dir;
+            }
+        }
+    }
+    std::env::temp_dir()
+}
+
+/// A test cut off by a crash or a kill leaves its file behind, and outside the temp folder nothing else removes it.
+fn remove_leftovers(dir: &Path) {
+    for path in fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()) {
+        let pid = path.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_prefix(".deskmonk-speedtest-")).map(str::to_owned);
+        if pid.is_some_and(|pid| !Path::new("/proc").join(pid).exists()) {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
 /// Writes then reads `size` bytes in `dir`. `progress` counts bytes done, up to 2 × `size`.
 /// Refuses to run when the disk does not have plenty of free space: users of a cleaner are often nearly full.
 /// Slow (seconds on an HDD): call it off the UI thread.
 pub fn run(dir: &Path, size: u64, progress: &AtomicU64) -> io::Result<Speed> {
+    if cfg!(target_os = "linux") {
+        remove_leftovers(dir);
+    }
     // shortcut: no free-space check on Windows (see disk_space); a full disk fails the write and the file is still removed.
     if let Some((_, free)) = crate::disk_space(dir)
         && free < size.saturating_mul(3)
@@ -116,5 +142,23 @@ mod tests {
         assert_eq!(progress.load(Ordering::Relaxed), 32 << 20);
         assert!(!dir.join(format!(".deskmonk-speedtest-{}", std::process::id())).exists());
         assert!(run(&dir, u64::MAX / 4, &progress).is_err(), "must refuse without free space");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn tests_on_a_disk_and_removes_only_dead_leftovers() {
+        assert_ne!(test_dir(), std::env::temp_dir());
+        let dir = std::env::temp_dir().join(format!("deskmonk-speed-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        // A pid no process can have, this process's own, and someone else's file.
+        let dead = dir.join(".deskmonk-speedtest-999999999");
+        let alive = dir.join(format!(".deskmonk-speedtest-{}", std::process::id()));
+        let other = dir.join("notes.txt");
+        for file in [&dead, &alive, &other] {
+            fs::write(file, "x").unwrap();
+        }
+        remove_leftovers(&dir);
+        assert!(!dead.exists() && alive.exists() && other.exists());
+        fs::remove_dir_all(&dir).unwrap();
     }
 }
