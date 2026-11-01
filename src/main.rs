@@ -1053,7 +1053,7 @@ impl App {
                             let done = Arc::new(AtomicU64::new(0));
                             let (counter, ctx) = (done.clone(), ui.ctx().clone());
                             std::thread::spawn(move || {
-                                let _ = tx.send(deskmonk::speedtest::run(&std::env::temp_dir(), SPEED_TEST, &counter));
+                                let _ = tx.send(deskmonk::speedtest::run(&deskmonk::speedtest::test_dir(), SPEED_TEST, &counter));
                                 ctx.request_repaint();
                             });
                             self.speed_run = Some((rx, done));
