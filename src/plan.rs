@@ -46,7 +46,12 @@ pub fn now() -> u64 {
 
 impl Plan {
     pub fn load() -> Self {
-        let text = path().and_then(|p| fs::read_to_string(p).ok()).unwrap_or_default();
+        Self::parse(&path().and_then(|p| fs::read_to_string(p).ok()).unwrap_or_default())
+    }
+
+    /// A missing or unreadable line keeps its default, so a file from an older version, a truncated
+    /// one or no file at all still loads — as Free, never as Pro.
+    fn parse(text: &str) -> Self {
         let mut l = text.lines();
         let mut next = || l.next().unwrap_or_default().to_string();
         Self {
@@ -58,10 +63,14 @@ impl Plan {
         }
     }
 
+    fn text(&self) -> String {
+        format!("{}\n{}\n{}\n{}\n{}\n", self.key, self.pro_until, self.day, self.cleaned, self.vaults)
+    }
+
     fn save(&self) {
         let Some(path) = path() else { return };
         let _ = fs::create_dir_all(path.parent().unwrap());
-        let _ = fs::write(&path, format!("{}\n{}\n{}\n{}\n{}\n", self.key, self.pro_until, self.day, self.cleaned, self.vaults));
+        let _ = fs::write(&path, self.text());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -243,5 +252,31 @@ mod tests {
         assert_eq!((plan.cleaned, plan.vaults), (FREE_CLEAN, 2));
         plan.roll("2026-10-30".into());
         assert_eq!(plan, Plan { key: "k".into(), pro_until: 1000, day: "2026-10-30".into(), cleaned: 0, vaults: 0 });
+    }
+
+    /// What a buyer sees: a key entered once in the Pro dialog is still Pro after a restart. And the
+    /// other direction, which matters more: no missing or damaged file may ever unlock Pro.
+    #[test]
+    fn a_license_survives_a_restart() {
+        let saved = Plan {
+            key: "DM-ABCD-EFGH-JKLM".into(),
+            pro_until: 2_000_000_000,
+            day: "2026-10-30".into(),
+            cleaned: 1 << 30,
+            vaults: 1,
+        };
+        assert_eq!(Plan::parse(&saved.text()), saved);
+        assert!(Plan::parse(&saved.text()).pro_at(2_000_000_000));
+
+        // Written by a version with fewer fields: the key and the paid period still come back.
+        assert_eq!(
+            Plan::parse("DM-ABCD-EFGH-JKLM\n2000000000\n"),
+            Plan { key: "DM-ABCD-EFGH-JKLM".into(), pro_until: 2_000_000_000, ..Plan::default() }
+        );
+
+        for text in ["", "\n\n\n\n", "DM-ABCD-EFGH-JKLM\nforever\n"] {
+            assert_eq!(Plan::parse(text).pro_until, 0, "{text:?}");
+            assert!(!Plan::parse(text).pro_at(2_000_000_000), "{text:?}");
+        }
     }
 }
