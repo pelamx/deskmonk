@@ -52,6 +52,10 @@ const NEON: [Color32; 8] = [
     Color32::from_rgb(255, 70, 70),
 ];
 
+// On Windows the settings and the Recycle Bin ignore HOME, so the test could reach the real ones.
+#[cfg(all(test, unix))]
+mod gui_tests;
+
 fn main() -> eframe::Result {
     deskmonk::use_real_home();
     i18n::init();
