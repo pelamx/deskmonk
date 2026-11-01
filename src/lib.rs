@@ -205,16 +205,17 @@ pub fn use_real_home() {
     }
 }
 
-/// Moves a file or folder to the Trash. The sandboxed build may not ask Finder to do it, so it uses
-/// NSFileManager there (Finder's "Put Back" then does not know the original place).
+/// Moves a file or folder to the Trash. On macOS through NSFileManager: asking Finder plays its trash sound for
+/// every item, and the sandboxed build may not ask it at all (Finder's "Put Back" then does not know the original place).
 pub fn to_trash(path: &Path) -> Result<(), trash::Error> {
     #[cfg(target_os = "macos")]
-    if sandboxed() {
+    {
         use trash::macos::{DeleteMethod, TrashContextExtMacos};
         let mut ctx = trash::TrashContext::default();
         ctx.set_delete_method(DeleteMethod::NsFileManager);
-        return ctx.delete(path);
+        ctx.delete(path)
     }
+    #[cfg(not(target_os = "macos"))]
     trash::delete(path)
 }
 
