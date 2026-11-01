@@ -8,21 +8,20 @@ import { esc } from "./admin";
 
 const PAGES = new Set(["/", "/index.html", "/pricing", "/pricing.html"]);
 
-const ADS_ID = "AW-18549735514";
-// No consent banner, so no Google tag where advertising cookies need prior consent: the EU, EEA, UK, Switzerland and Türkiye (where the controller is).
+// The Google tag and the conversions live in this container. Its two click events come from docs/site.js.
+const GTM_ID = "GTM-KK2TWW72";
+// No consent banner, so no Tag Manager where advertising cookies need prior consent: the EU, EEA, UK, Switzerland and Türkiye (where the controller is).
 const NO_ADS = new Set("AT BE BG HR CY CZ DK EE FI FR DE GR HU IE IT LV LT LU MT NL PL PT RO SK SI ES SE IS LI NO GB CH TR".split(" "));
 
-/** The Google tag for /ads.js. Empty where it may not run, or when the country is unknown; the browser's Global Privacy Control also stops it. */
+/** Google Tag Manager for /ads.js. Empty where it may not run, or when the country is unknown; the browser's Global Privacy Control also stops it. */
 export function adsScript(req: Request): Response {
   const country = countryOf(req);
   const body = !country || NO_ADS.has(country) ? "" : `if (!navigator.globalPrivacyControl) {
   window.dataLayer = window.dataLayer || [];
-  window.gtag = function () { dataLayer.push(arguments); };
-  gtag("js", new Date());
-  gtag("config", "${ADS_ID}");
+  dataLayer.push({ "gtm.start": Date.now(), event: "gtm.js" });
   var s = document.createElement("script");
   s.async = true;
-  s.src = "https://www.googletagmanager.com/gtag/js?id=${ADS_ID}";
+  s.src = "https://www.googletagmanager.com/gtm.js?id=${GTM_ID}";
   document.head.appendChild(s);
 }
 `;

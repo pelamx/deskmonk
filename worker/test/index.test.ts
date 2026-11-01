@@ -160,10 +160,10 @@ test("buyer pages: language, unconfigured checkout, escaping", async () => {
   expect(js("</script>")).toBe('"\\u003c/script>"');
 });
 
-test("the Google tag stays out where it needs consent, and when the country is unknown", async () => {
+test("Google Tag Manager stays out where it needs consent, and when the country is unknown", async () => {
   const ads = (country: string | null) =>
     adsScript(Object.assign(new Request("https://deskmonk.app/ads.js"), country ? { cf: { country } } : {})).text();
-  expect(await ads("US")).toContain('gtag("config", "AW-18549735514")');
+  expect(await ads("US")).toContain("gtm.js?id=GTM-KK2TWW72");
   for (const c of ["DE", "NO", "GB", "CH", "TR", null]) expect(await ads(c)).toBe("");
 });
 

@@ -32,6 +32,14 @@ if (price) {
   for (const b of document.querySelectorAll(".cycle button")) b.addEventListener("click", () => show(b.dataset.cycle));
 }
 
+// Download and Get Pro clicks, for Google Tag Manager (worker/src/site.ts). Where it isn't loaded, this list stays in the page.
+document.addEventListener("click", (e) => {
+  const a = e.target.closest("a");
+  if (!a) return;
+  const download = a.pathname.startsWith("/downloads/") || a.hostname === "github.com";
+  if (download || a.pathname === "/buy") (window.dataLayer = window.dataLayer || []).push({ event: download ? "download_click" : "get_pro_click" });
+});
+
 // The download that fits the visitor's computer.
 const ua = navigator.userAgent;
 const os = /Mac/.test(ua) && !/iPhone|iPad/.test(ua) ? "mac" : /Windows/.test(ua) ? "win" : /Linux|X11/.test(ua) && !/Android/.test(ua) ? "linux" : null;
