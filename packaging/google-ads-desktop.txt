@@ -1,0 +1,89 @@
+deskMonk: Google Ads Search campaign for the desktop apps (macOS, Windows, Linux)
+
+CAMPAIGN SETTINGS
+Goal:           Website traffic
+Type:           Search
+Networks:       Search only; turn off Search partners and Display Network
+Final URL:      https://deskmonk.app/?lang=en
+Language:       English
+Devices:        Computers only (see the end of this file)
+Bidding:        Maximize clicks, with a maximum cost per click you are comfortable with
+
+
+HEADLINES (30 characters at most)
+deskMonk Disk Cleaner
+Free Up Disk Space
+Find Duplicate Files
+See What Fills Your Disk
+For Mac, Windows and Linux
+Free Download, No Account
+Review Before You Delete
+Encrypt Private Files
+Focus Timer Included
+Disk Map and Speed Test
+Scans Run on Your Computer
+Free Plan: 2 GB a Day
+
+
+DESCRIPTIONS (90 characters at most)
+Find duplicates, junk, old downloads and large files. You choose what gets removed.
+See how much space you will gain before anything is deleted. No account needed.
+Disk cleaner, disk map, encrypted vault and focus timer in one desktop app.
+Free download for macOS, Windows and Linux. Clean up to 2 GB a day on the free plan.
+
+
+AD GROUP: General (phrase match)
+"disk cleaner"
+"disk space analyzer"
+"duplicate file finder"
+"free up disk space"
+"find large files"
+
+AD GROUP: Mac (phrase match)
+"mac disk cleaner"
+"mac cleaner"
+"free up space on mac"
+"duplicate file finder mac"
+"disk space analyzer mac"
+
+AD GROUP: Windows (phrase match)
+"windows disk cleaner"
+"pc disk cleaner"
+"free up disk space windows"
+"duplicate file finder windows"
+"disk space analyzer windows"
+
+AD GROUP: Linux (phrase match)
+"linux disk cleaner"
+"linux disk space analyzer"
+"duplicate file finder linux"
+"free up disk space ubuntu"
+
+
+NEGATIVE KEYWORDS (campaign level)
+android
+iphone
+ipad
+ios
+phone
+mobile
+tablet
+apk
+crack
+keygen
+virus
+malware
+registry
+speed up
+ram
+
+
+COMPUTERS ONLY
+Search campaigns: open the campaign's Devices report and set "Mobile phones" and "Tablets" to a bid adjustment of "Decrease by 100%".
+Computers cover Windows, macOS and Linux together. Google does not offer a separate choice for them in Search, so the ad groups above split them by keyword.
+
+
+WHAT THE APPS RUN ON (from deskmonk.app)
+macOS 10.13 or later, Apple Silicon and Intel
+Windows 10 and 11, 64-bit
+Linux with glibc 2.28 or later, x86_64 and ARM
