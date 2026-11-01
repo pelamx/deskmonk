@@ -50,3 +50,7 @@ objc2-foundation = { version = "0.3", optional = true, default-features = false,
 [target.'cfg(unix)'.dependencies]
 # Already in the tree; statvfs and page-cache control for the disk speed test.
 libc = "0.2"
+
+# macOS 27's dyld rejects some stripped proc-macro dylibs ("mis-aligned LINKEDIT string pool"), which rustc reports as "can't find crate".
+[profile.release.build-override]
+strip = false

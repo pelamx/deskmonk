@@ -19,6 +19,8 @@ case $MODE in
     WORK=dist/appstore
     # Own target folder, so the App Store binary never replaces the regular one in target/release.
     export CARGO_TARGET_DIR=target/appstore
+    # Upload builds only, so local sandbox tests send no stats; without it the admin panel gets nothing from App Store users.
+    if [ "$MODE" = appstore ]; then export DESKMONK_TELEMETRY_URL=${DESKMONK_TELEMETRY_URL:-https://deskmonk.app/api/events}; fi
     # Full Xcode, not the Command Line Tools: only its Swift back-deployment libraries include Intel (x86_64).
     export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer} ;;
   *) echo "unknown mode: $MODE" >&2; exit 2 ;;
@@ -29,9 +31,7 @@ TARGET_DIR=${CARGO_TARGET_DIR:-target}
 # ${X[@]+…} form: macOS's bash 3.2 calls an empty array "unbound" under set -u.
 build() { cargo build --release --bin deskmonk --target "$1" ${FEATURES[@]+"${FEATURES[@]}"}; }
 for target in aarch64-apple-darwin x86_64-apple-darwin; do
-  # A fresh build on macOS 27 sometimes cannot load a proc-macro it just built ("can't find crate");
-  # building again continues where it stopped.
-  build "$target" || build "$target" || build "$target"
+  build "$target"
 done
 
 APP=$WORK/out/deskMonk.app
@@ -70,6 +70,21 @@ if [ "$MODE" = dmg ]; then
 fi
 
 cp packaging/appstore/PrivacyInfo.xcprivacy "$APP/Contents/Resources/"
+# Transporter and App Store Connect look for the icon in a compiled asset catalog, not only in icon.icns.
+ICONS=$WORK/Assets.xcassets/AppIcon.appiconset
+mkdir -p "$ICONS"
+cp "$WORK"/icon.iconset/*.png "$ICONS/"
+{
+  echo '{"info":{"author":"xcode","version":1},"images":['
+  for size in 16 32 128 256 512; do
+    echo "{\"idiom\":\"mac\",\"size\":\"${size}x${size}\",\"scale\":\"1x\",\"filename\":\"icon_${size}x${size}.png\"},"
+    echo "{\"idiom\":\"mac\",\"size\":\"${size}x${size}\",\"scale\":\"2x\",\"filename\":\"icon_${size}x${size}@2x.png\"}$([ $size = 512 ] || echo ,)"
+  done
+  echo ']}'
+} > "$ICONS/Contents.json"
+xcrun actool "$WORK/Assets.xcassets" --compile "$APP/Contents/Resources" --platform macosx --minimum-deployment-target "$MINOS" \
+  --app-icon AppIcon --output-partial-info-plist "$WORK/icon.plist" --errors --warnings >/dev/null
+/usr/libexec/PlistBuddy -c 'Add :CFBundleIconName string AppIcon' "$APP/Contents/Info.plist"
 if [ "$MODE" = appstore-test ]; then
   # The App ID entitlements are only valid with a provisioning profile; without them the sandbox still applies.
   ENT=$WORK/test.entitlements
@@ -83,6 +98,8 @@ fi
 PROFILE=packaging/appstore/embedded.provisionprofile
 [ -f "$PROFILE" ] || { echo "missing $PROFILE (Mac App Store profile for com.pelamx.deskmonk, see packaging/appstore/README.md)" >&2; exit 1; }
 cp "$PROFILE" "$APP/Contents/embedded.provisionprofile"
+# A profile from Downloads carries com.apple.quarantine, and Apple rejects any package containing it (error 91109).
+xattr -cr "$APP"
 codesign --force --timestamp --sign "Apple Distribution" --entitlements packaging/appstore/deskMonk.entitlements "$APP"
 PKG="dist/deskMonk-$VERSION-appstore.pkg"
 productbuild --component "$APP" /Applications --sign "3rd Party Mac Developer Installer" "$PKG"
