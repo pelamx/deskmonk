@@ -44,7 +44,7 @@ pub struct Deletion {
 
 /// Result of a [`Deletion`].
 pub struct Finished {
-    /// Items that could not be deleted (completely); they stay selected.
+    /// Items that could not be deleted (completely); unticked, so Clean does not keep offering what just failed.
     pub failed: Vec<Item>,
     pub freed: u64,
     /// Reason of the first failure, for the status line.
@@ -78,7 +78,7 @@ impl Deletion {
                 freed: 0,
                 first_error: None,
             };
-            for item in selected {
+            for mut item in selected {
                 let outcome = if is_permanent(&item, permanent) {
                     remove(&item.path)
                 } else {
@@ -89,7 +89,8 @@ impl Deletion {
                     Err(e) => {
                         result
                             .first_error
-                            .get_or_insert_with(|| format!("{}: {e}", item.path.display()));
+                            .get_or_insert_with(|| format!("{}: {e}", item.name()));
+                        item.selected = false;
                         result.failed.push(item);
                     }
                 }
@@ -255,6 +256,17 @@ mod tests {
         assert_eq!(items.iter().map(|i| i.selected).collect::<Vec<_>>(), [false, true, true, false, true, true]);
         super::set_selection(&mut items, Some(Category::Junk), false);
         assert!(!items[5].selected && items[4].selected);
+    }
+
+    #[test]
+    fn failed_items_come_back_unticked_with_the_reason() {
+        use super::scan::{Category, Item};
+        let path = std::env::temp_dir().join(format!("deskmonk-gone-{}", std::process::id()));
+        let mut items = vec![Item { path, size: 1, category: Category::Junk, group: 0, selected: true }];
+        let done = super::Deletion::start(&mut items, false, || {}).rx.recv().unwrap();
+        assert!(items.is_empty() && done.freed == 0);
+        assert!(!done.failed[0].selected);
+        assert!(done.first_error.unwrap().starts_with(&done.failed[0].name()));
     }
 
     #[cfg(unix)]

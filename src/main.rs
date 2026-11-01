@@ -33,6 +33,8 @@ const PRIVACY_POLICY: &str = "https://deskmonk.app/privacy";
 
 const ACCENT: Color32 = Color32::from_rgb(79, 110, 247);
 const DANGER: Color32 = Color32::from_rgb(229, 72, 77);
+/// Starts a status line that reports a failed cleaning; the footer shows such a line in red.
+const FAILED: &str = "⚠";
 const ROW_H: f32 = 46.0;
 /// Size of the disk speed test file.
 const SPEED_TEST: u64 = 1 << 30;
@@ -387,7 +389,8 @@ enum Page {
 
 enum Row {
     Group(usize),
-    Item(usize),
+    /// The bool marks a group's first copy, which selecting everything leaves unticked.
+    Item(usize, bool),
 }
 
 struct App {
@@ -619,15 +622,20 @@ impl App {
         let ok = self.deleting.take().unwrap().total - done.failed.len();
         self.telemetry.clean_done("gui", ok, done.freed);
         self.plan.record_clean(done.freed);
-        self.status = tf!(
+        let cleaned = tf!(
             "✔ {ok} öğe temizlendi, {} yer açıldı",
             "✔ {ok} items cleaned, {} freed",
             "✔ {ok} elementos limpiados, {} liberados",
             human_size(done.freed)
         );
-        if let Some(err) = done.first_error {
-            self.status += &tf!(" · {} öğe tamamen silinemedi: {err}", " · {} items could not be fully deleted: {err}", " · {} elementos no se pudieron borrar del todo: {err}", done.failed.len());
-        }
+        self.status = match done.first_error {
+            // The failure comes first: the footer cuts off a long line.
+            Some(err) => {
+                let failed = tf!("{FAILED} {} öğe tamamen silinemedi: {err}", "{FAILED} {} items could not be fully deleted: {err}", "{FAILED} {} elementos no se pudieron borrar del todo: {err}", done.failed.len());
+                if ok > 0 { format!("{failed} · {cleaned}") } else { failed }
+            }
+            None => cleaned,
+        };
         self.items.extend(done.failed);
     }
 
@@ -846,15 +854,17 @@ impl App {
         }
 
         let tab = self.tab;
+        // While scanning the list is incomplete (duplicates come last), so a click would miss most of it.
+        let idle = self.scanning.is_none();
         // Buttons first (right to left), so the title gets only the space left and truncates instead of overlapping.
         ui.allocate_ui_with_layout(
             vec2(ui.available_width(), 36.0),
             egui::Layout::right_to_left(egui::Align::Center),
             |ui| {
-                if ui.button(t("Seçimi kaldır", "Deselect", "Quitar selección")).clicked() {
+                if ui.add_enabled(idle, egui::Button::new(t("Seçimi kaldır", "Deselect", "Quitar selección"))).clicked() {
                     deskmonk::set_selection(&mut self.items, Some(tab), false);
                 }
-                if ui.button(t("Tümünü seç", "Select all", "Seleccionar todo")).clicked() {
+                if ui.add_enabled(idle, egui::Button::new(t("Tümünü seç", "Select all", "Seleccionar todo"))).clicked() {
                     deskmonk::set_selection(&mut self.items, Some(tab), true);
                 }
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -895,11 +905,12 @@ impl App {
             .enumerate()
             .filter(|(_, i)| i.category == tab)
         {
-            if item.group > 0 && item.group != last_group {
+            let first_copy = item.group > 0 && item.group != last_group;
+            if first_copy {
                 rows.push(Row::Group(item.group));
                 last_group = item.group;
             }
-            rows.push(Row::Item(i));
+            rows.push(Row::Item(i, first_copy));
         }
         if rows.is_empty() && self.phase.is_some() {
             let (title, text) = match (self.phase, tab) {
@@ -953,7 +964,7 @@ impl App {
                     for row in &rows[range] {
                         match *row {
                             Row::Group(g) => group_row(ui, g, &self.items),
-                            Row::Item(i) => item_row(ui, &mut self.items[i], i),
+                            Row::Item(i, first_copy) => item_row(ui, &mut self.items[i], i, first_copy),
                         }
                     }
                 },
@@ -2427,7 +2438,7 @@ impl App {
                 let all = egui::Button::new(RichText::new(t("☑  Hepsini seç", "☑  Select all", "☑  Seleccionar todo")).size(15.0))
                     .min_size(vec2(130.0, 40.0))
                     .corner_radius(10);
-                if ui.add_enabled(!self.items.is_empty() && self.deleting.is_none(), all).clicked() {
+                if ui.add_enabled(!self.items.is_empty() && self.deleting.is_none() && self.scanning.is_none(), all).clicked() {
                     deskmonk::set_selection(&mut self.items, None, true);
                 }
                 ui.add_space(12.0);
@@ -2444,7 +2455,7 @@ impl App {
                     } else {
                         &self.status
                     };
-                    ui.label(RichText::new(status).small().color(muted));
+                    ui.label(RichText::new(status).small().color(if status.starts_with(FAILED) { DANGER } else { muted }));
                 });
             },
         );
@@ -3435,7 +3446,7 @@ fn group_row(ui: &mut Ui, group: usize, items: &[Item]) {
     );
 }
 
-fn item_row(ui: &mut Ui, item: &mut Item, idx: usize) {
+fn item_row(ui: &mut Ui, item: &mut Item, idx: usize, first_copy: bool) {
     let dark = ui.visuals().dark_mode;
     let (_, _, border, muted) = palette(dark);
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
@@ -3522,6 +3533,16 @@ fn item_row(ui: &mut Ui, item: &mut Item, idx: usize) {
             "📂",
             FontId::proportional(14.0),
             ui.visuals().text_color(),
+        );
+    }
+    // Says why this row stays unticked after "Select all". On hover this spot holds the reveal button.
+    if first_copy && !item.selected && !hovered {
+        p.text(
+            rect.right_center() - vec2(96.0, 0.0),
+            Align2::RIGHT_CENTER,
+            t("Korunur", "Kept", "Conservada"),
+            FontId::proportional(11.5),
+            ACCENT,
         );
     }
     p.text(
