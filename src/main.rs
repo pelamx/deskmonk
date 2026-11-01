@@ -605,6 +605,7 @@ impl App {
     }
 
     fn delete_selected(&mut self, ctx: egui::Context) {
+        self.status.clear();
         self.deleting = Some(deskmonk::Deletion::start(
             &mut self.items,
             false,
@@ -632,9 +633,12 @@ impl App {
     }
 
     fn totals(&self, cat: Option<Category>, only_selected: bool) -> (usize, u64) {
+        if !only_selected {
+            return deskmonk::removable(&self.items, cat);
+        }
         self.items
             .iter()
-            .filter(|i| cat.is_none_or(|c| i.category == c) && (!only_selected || i.selected))
+            .filter(|i| cat.is_none_or(|c| i.category == c) && i.selected)
             .fold((0, 0), |(n, s), i| (n + 1, s + i.size))
     }
 

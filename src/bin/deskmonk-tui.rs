@@ -367,11 +367,7 @@ impl App {
         );
 
         let titles = Category::ALL.map(|cat| {
-            let (n, size) = self
-                .items
-                .iter()
-                .filter(|i| i.category == cat)
-                .fold((0, 0), |(c, s), i| (c + 1, s + i.size));
+            let (n, size) = deskmonk::removable(&self.items, Some(cat));
             format!("{} ({n}, {})", cat.label(), human_size(size))
         });
         f.render_widget(

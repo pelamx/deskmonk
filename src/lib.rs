@@ -69,6 +69,7 @@ impl Deletion {
         let (selected, rest): (Vec<Item>, Vec<Item>) =
             std::mem::take(items).into_iter().partition(|i| i.selected);
         *items = rest;
+        drop_lone_copies(items);
         let done = Arc::new(AtomicUsize::new(0));
         let (tx, rx) = channel();
         let (total, counter) = (selected.len(), done.clone());
@@ -170,6 +171,26 @@ pub fn keep_selection(old: &[Item], new: &mut [Item]) {
     }
 }
 
+/// Takes duplicates whose copies are all gone off the list: the one left isn't a duplicate any more.
+fn drop_lone_copies(items: &mut Vec<Item>) {
+    let mut members = std::collections::HashMap::new();
+    for item in items.iter().filter(|i| i.category == scan::Category::Duplicate) {
+        *members.entry(item.group).or_insert(0) += 1;
+    }
+    items.retain(|i| i.category != scan::Category::Duplicate || members[&i.group] > 1);
+}
+
+/// Count and size of what a cleaning could remove (of `cat`, or all when None): the first copy of a duplicate
+/// group stays, see [`set_selection`], so it isn't counted.
+pub fn removable(items: &[Item], cat: Option<scan::Category>) -> (usize, u64) {
+    let mut kept = std::collections::HashSet::new();
+    items
+        .iter()
+        .filter(|i| cat.is_none_or(|c| i.category == c))
+        .filter(|i| i.category != scan::Category::Duplicate || !kept.insert(i.group))
+        .fold((0, 0), |(n, s), i| (n + 1, s + i.size))
+}
+
 /// Ticks or unticks every item of `cat` (all categories when None). Selecting never ticks the first copy
 /// of a duplicate group, so at least one copy of every file survives a cleaning.
 pub fn set_selection(items: &mut [Item], cat: Option<scan::Category>, on: bool) {
@@ -244,6 +265,25 @@ pub fn scan_default(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn counts_leave_out_the_copy_that_stays() {
+        use super::scan::{Category, Item};
+        let item = |name: &str, category, group, selected| Item { path: name.into(), size: 10, category, group, selected };
+        let mut items = vec![
+            item("a1", Category::Duplicate, 1, false), item("a2", Category::Duplicate, 1, false), item("a3", Category::Duplicate, 1, false),
+            item("b1", Category::Duplicate, 2, false), item("b2", Category::Duplicate, 2, true),
+            item("big", Category::Large, 0, false),
+        ];
+        assert_eq!(super::removable(&items, None), (4, 40)); // a2, a3, b2, big
+        assert_eq!(super::removable(&items, Some(Category::Duplicate)), (3, 30));
+        assert_eq!(super::removable(&items, Some(Category::Large)), (1, 10));
+        // b2 is ticked: taking it away leaves b1 alone, while group a still has its copies.
+        items.retain(|i| !i.selected);
+        super::drop_lone_copies(&mut items);
+        let left: Vec<_> = items.iter().map(|i| i.path.to_str().unwrap()).collect();
+        assert_eq!(left, ["a1", "a2", "a3", "big"]);
+    }
+
     #[test]
     fn select_all_keeps_one_copy_per_group() {
         use super::scan::{Category, Item};
