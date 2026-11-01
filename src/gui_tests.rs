@@ -143,7 +143,7 @@ fn the_app_works() {
     assert_eq!(count(&h, Category::Duplicate), 0, "a copy with no others left is no duplicate");
     assert_eq!(h.state().totals(Some(Category::Duplicate), false), (0, 0));
 
-    // A file that can't be deleted is reported, stays ticked and leaves the rest alone.
+    // A file that can't be deleted is reported, comes back unticked and leaves the rest alone.
     {
         let app = h.state_mut();
         app.items.push(Item { path: home.join("Documents/never existed"), size: 7, category: Category::Large, group: 0, selected: true });
@@ -157,7 +157,7 @@ fn the_app_works() {
     until(&mut h, "cleaning with a failure", |a| a.deleting.is_none());
     assert!(!old.exists(), "the good one still goes");
     assert!(h.state().status.contains("1 items cleaned") && h.state().status.contains("1 items could not"), "status: {}", h.state().status);
-    assert!(h.state().items.iter().any(|i| i.selected && i.path.ends_with("never existed")), "the failed one stays ticked");
+    assert!(h.state().items.iter().any(|i| !i.selected && i.path.ends_with("never existed")), "the failed one comes back unticked");
 
     // The next cleaning starts without the old message; here the failed one is gone from the list first.
     h.state_mut().items.retain(|i| !i.path.ends_with("never existed"));
