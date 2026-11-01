@@ -194,7 +194,19 @@ pub fn scan(
     let mut flagged: Vec<Item> = Vec::new(); // junk by name, old downloads, large files
     let mut junk_dirs: HashMap<PathBuf, u64> = HashMap::new();
     let mut repos: HashSet<PathBuf> = HashSet::new();
+    let mut read_only: HashSet<PathBuf> = HashSet::new(); // folders this user may not write to right now
+    let mut locked: HashSet<PathBuf> = HashSet::new(); // the same and not ours: their content cannot be deleted at all
+    let mut stuck: HashSet<PathBuf> = HashSet::new(); // junk items with such a folder inside
     let mut last_report = Instant::now();
+    // The whole trash is one item; caches are one item per app folder.
+    let junk_key = |path: &Path| {
+        let (jroot, rel) = places.junk.iter().find_map(|j| Some((j, path.strip_prefix(j).ok()?)))?;
+        if places.trash.as_ref() == Some(jroot) {
+            Some(jroot.clone())
+        } else {
+            Some(jroot.join(rel.components().next()?))
+        }
+    };
 
     // A root inside another root would be walked twice and its files would look like duplicates of themselves.
     let roots: Vec<&Path> = roots
@@ -221,6 +233,21 @@ pub fn scan(
             if entry.file_type().is_dir() && entry.path().join(".git").exists() {
                 repos.insert(entry.path().to_path_buf());
             }
+            if entry.file_type().is_dir() && is_read_only(&entry) {
+                read_only.insert(entry.path().to_path_buf());
+                if !is_mine(&entry) {
+                    locked.insert(entry.path().to_path_buf());
+                }
+            }
+            // Clean could never delete this, so it is not offered.
+            // shortcut: a cache with one locked subfolder is left out whole; list the deletable rest if that gets common.
+            if entry.path().parent().is_some_and(|p| locked.contains(p)) {
+                if let Some(key) = junk_key(entry.path()) {
+                    junk_dirs.remove(&key);
+                    stuck.insert(key);
+                }
+                continue;
+            }
             if !entry.file_type().is_file() {
                 continue;
             }
@@ -228,18 +255,15 @@ pub fn scan(
             progress.fetch_add(1, Ordering::Relaxed);
             let path = entry.into_path();
             let size = meta.len();
-            if let Some((jroot, rel)) = places
-                .junk
-                .iter()
-                .find_map(|j| Some((j, path.strip_prefix(j).ok()?)))
-            {
-                // The whole trash is one item; caches are one item per app folder.
-                let key = if places.trash.as_ref() == Some(jroot) {
-                    jroot.clone()
-                } else {
-                    jroot.join(rel.components().next().unwrap())
-                };
-                *junk_dirs.entry(key).or_default() += size;
+            if let Some(key) = junk_key(&path) {
+                if !stuck.contains(&key) {
+                    *junk_dirs.entry(key).or_default() += size;
+                }
+                continue;
+            }
+            // Files cannot leave a read-only folder, and it is usually read-only on purpose: Go's module cache
+            // (~/go/pkg/mod) and the like break when files go missing. Whole caches are junk roots, handled above.
+            if path.parent().is_some_and(|p| read_only.contains(p)) {
                 continue;
             }
             let modified = meta.modified().unwrap_or(now);
@@ -318,6 +342,31 @@ pub fn scan(
     flagged.sort_by_key(|i| std::cmp::Reverse(i.size));
     items.extend(flagged);
     items
+}
+
+/// Whether this user may not create or remove entries in the folder right now.
+#[cfg(unix)]
+fn is_read_only(dir: &walkdir::DirEntry) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(path) = std::ffi::CString::new(dir.path().as_os_str().as_bytes()) else { return false };
+    unsafe { libc::access(path.as_ptr(), libc::W_OK | libc::X_OK) != 0 }
+}
+
+/// Whether this user owns it, and so can make it writable. A root-owned folder in ~/.cache is not.
+#[cfg(unix)]
+fn is_mine(dir: &walkdir::DirEntry) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    dir.metadata().is_ok_and(|m| m.uid() == unsafe { libc::geteuid() })
+}
+
+#[cfg(not(unix))]
+fn is_read_only(_: &walkdir::DirEntry) -> bool {
+    false
+}
+
+#[cfg(not(unix))]
+fn is_mine(_: &walkdir::DirEntry) -> bool {
+    true
 }
 
 /// Junk folders plus flagged files, biggest first within each.
@@ -428,5 +477,40 @@ mod tests {
         assert_eq!(progress.load(Ordering::Relaxed), 11); // node_modules and .git not walked
         assert_eq!(items.len(), 6);
         assert_eq!(human_size(1536), "1.5 KB");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn does_not_offer_files_in_read_only_folders() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return; // root may write anywhere
+        }
+        let dir = std::env::temp_dir().join(format!("deskmonk-ro-{}", std::process::id()));
+        fs::create_dir_all(dir.join("mod@v1")).unwrap();
+        fs::create_dir_all(dir.join("mine")).unwrap();
+        let body = vec![7u8; DUP_MIN as usize];
+        fs::write(dir.join("mod@v1/a.bin"), &body).unwrap();
+        fs::write(dir.join("mine/a.bin"), &body).unwrap();
+        fs::write(dir.join("mine/b.bin"), &body).unwrap();
+        fs::set_permissions(dir.join("mod@v1"), fs::Permissions::from_mode(0o555)).unwrap();
+        let places = Places { trash: None, downloads: None, junk: vec![], user: vec![] };
+        let items = scan(&[&dir], &places, &AtomicUsize::new(0), |_, _| {});
+        fs::set_permissions(dir.join("mod@v1"), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(items.len(), 2); // the two copies in the writable folder
+        assert!(items.iter().all(|i| i.path.parent().unwrap().ends_with("mine")));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn does_not_offer_what_cannot_be_deleted() {
+        if unsafe { libc::geteuid() } == 0 {
+            return; // root may delete anything
+        }
+        let etc = Path::new("/etc"); // root-owned everywhere
+        let places = Places { trash: None, downloads: None, junk: vec![etc.into()], user: vec![] };
+        let items = scan(&[etc], &places, &AtomicUsize::new(0), |_, _| {});
+        assert!(items.is_empty());
     }
 }
