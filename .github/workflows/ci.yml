@@ -89,6 +89,32 @@ jobs:
           name: windows
           path: dist/*.zip
 
+  # Microsoft Store package. Only on a tag: its identity must match the Partner Center reservation,
+  # so a package built from a branch could never be submitted anyway. The Store signs the upload, so
+  # what comes out here is unsigned — which is why it stays a CI artifact and is not attached to the
+  # release: nobody can install an unsigned .msix, and offering one would only produce support mail.
+  msix:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: windows-latest
+    env:
+      MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME }}
+      MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
+      MSIX_PUBLISHER_DISPLAY: ${{ vars.MSIX_PUBLISHER_DISPLAY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # A wrong identity is rejected on upload, so stop here rather than build something that looks
+      # submittable and is not.
+      - name: The Store package needs its Partner Center identity
+        run: test -n "$MSIX_IDENTITY_NAME" && test -n "$MSIX_PUBLISHER"
+        shell: bash
+      - run: powershell -NoProfile -ExecutionPolicy Bypass -File packaging/msix.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: msix
+          path: dist/*.msix
+
   # Static terminal UI: runs on any Linux of that CPU (servers, cloud images).
   tui-musl:
     strategy:
