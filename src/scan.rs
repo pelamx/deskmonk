@@ -10,6 +10,9 @@ use walkdir::WalkDir;
 
 pub const LARGE_FILE: u64 = 500 * 1024 * 1024;
 pub const OLD_DOWNLOAD: Duration = Duration::from_secs(90 * 24 * 3600);
+/// Junk written within the last day is a running program's working file: Windows will not let anyone
+/// delete an open file, and elsewhere deleting a live log or cache only makes the app write it again.
+const FRESH: Duration = Duration::from_secs(24 * 3600);
 /// Smaller duplicates free almost nothing and are mostly app internals.
 const DUP_MIN: u64 = 32 * 1024;
 /// Never descended into: deleting anything inside breaks repos / projects, and they are huge to walk.
@@ -110,6 +113,8 @@ pub struct Places {
     pub user: Vec<PathBuf>,
     /// Listed as one item instead of per entry. See [`trash_dir`].
     pub trash: Option<PathBuf>,
+    /// Bytes in the trash when no walk can reach them (the Windows Recycle Bin), 0 when the walk sees them.
+    pub trash_size: u64,
 }
 
 impl Places {
@@ -122,24 +127,45 @@ impl Places {
             dirs::audio_dir(),
             dirs::video_dir(),
         ];
+        #[cfg(windows)]
+        let trash_size = recycle_bin_size();
+        #[cfg(not(windows))]
+        let trash_size = 0;
         Self {
             downloads: dirs::download_dir(),
             junk: junk_roots(),
             user: user.into_iter().flatten().collect(),
             trash: trash_dir(),
+            trash_size,
         }
     }
 }
 
-/// The OS trash folder. None on Windows, whose Recycle Bin is not a plain folder.
+/// The OS trash folder. On Windows the Recycle Bin is not a folder anyone can walk (hidden, per drive,
+/// locked down), so this path only stands for it: its size and its emptying go through the OS instead.
 pub fn trash_dir() -> Option<PathBuf> {
     if cfg!(target_os = "macos") {
         dirs::home_dir().map(|h| h.join(".Trash"))
     } else if cfg!(windows) {
-        None
+        let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
+        Some(PathBuf::from(format!("{drive}\\$Recycle.Bin")))
     } else {
         dirs::data_dir().map(|d| d.join("Trash"))
     }
+}
+
+/// Bytes in the Recycle Bin. The walk never reaches it, so the OS lists what is in there; each item's
+/// id is its path inside the recycler, which we can measure.
+#[cfg(windows)]
+pub fn recycle_bin_size() -> u64 {
+    trash::os_limited::list()
+        .unwrap_or_default()
+        .iter()
+        .flat_map(|item| WalkDir::new(Path::new(&item.id)).into_iter().filter_map(Result::ok))
+        .filter_map(|e| e.metadata().ok())
+        .filter(|m| m.is_file())
+        .map(|m| m.len())
+        .sum()
 }
 
 /// Items in the OS trash must be removed for good, moving them "to the trash" again is meaningless.
@@ -192,9 +218,17 @@ pub fn scan(
     // Duplicate candidates by size: only user files (not hidden, not in a git repo) big enough to matter.
     let mut by_size: HashMap<u64, Vec<PathBuf>> = HashMap::new();
     let mut flagged: Vec<Item> = Vec::new(); // junk by name, old downloads, large files
-    let mut junk_dirs: HashMap<PathBuf, u64> = HashMap::new();
+    // Junk folder -> its size and whether anything in it was written in the last day, see `FRESH`.
+    let mut junk_dirs: HashMap<PathBuf, (u64, bool)> = HashMap::new();
     let mut repos: HashSet<PathBuf> = HashSet::new();
     let mut last_report = Instant::now();
+
+    // The Recycle Bin is where a Windows disk actually fills up, and no walk can reach it.
+    if places.trash_size > 0
+        && let Some(bin) = &places.trash
+    {
+        junk_dirs.insert(bin.clone(), (places.trash_size, false));
+    }
 
     // A root inside another root would be walked twice and its files would look like duplicates of themselves.
     let roots: Vec<&Path> = roots
@@ -228,6 +262,9 @@ pub fn scan(
             progress.fetch_add(1, Ordering::Relaxed);
             let path = entry.into_path();
             let size = meta.len();
+            let age = now
+                .duration_since(meta.modified().unwrap_or(now))
+                .unwrap_or_default();
             if let Some((jroot, rel)) = places
                 .junk
                 .iter()
@@ -239,12 +276,13 @@ pub fn scan(
                 } else {
                     jroot.join(rel.components().next().unwrap())
                 };
-                *junk_dirs.entry(key).or_default() += size;
+                let folder = junk_dirs.entry(key).or_default();
+                folder.0 += size;
+                folder.1 |= age < FRESH;
                 continue;
             }
-            let modified = meta.modified().unwrap_or(now);
-            let old = now.duration_since(modified).unwrap_or_default() > OLD_DOWNLOAD;
-            let class = if is_junk(&path) {
+            let old = age > OLD_DOWNLOAD;
+            let class = if is_junk(&path) && age >= FRESH {
                 Some((Category::Junk, true))
             } else if old
                 && places
@@ -321,10 +359,11 @@ pub fn scan(
 }
 
 /// Junk folders plus flagged files, biggest first within each.
-fn snapshot(junk_dirs: &HashMap<PathBuf, u64>, flagged: &[Item]) -> Vec<Item> {
+fn snapshot(junk_dirs: &HashMap<PathBuf, (u64, bool)>, flagged: &[Item]) -> Vec<Item> {
     let mut junk: Vec<Item> = junk_dirs
         .iter()
-        .map(|(path, &size)| Item {
+        .filter(|(_, (_, fresh))| !fresh)
+        .map(|(path, &(size, _))| Item {
             path: path.clone(),
             size,
             category: Category::Junk,
@@ -390,10 +429,21 @@ mod tests {
         fs::write(dir.join("cache/app/deep/2"), "bb").unwrap();
         fs::write(dir.join("trash/files/old.txt"), vec![1u8; 100]).unwrap();
         fs::write(dir.join("trash/info/old.txt.trashinfo"), vec![1u8; 10]).unwrap();
+        // Junk counts only once it has been sitting there a day; until then a program is probably still
+        // writing it (on Windows it is then locked and cannot be deleted at all). Age the junk, and
+        // leave one fresh file of each kind behind to prove it is left alone.
+        let yesterday = SystemTime::now() - FRESH - Duration::from_secs(60);
+        for f in ["x.tmp", ".DS_Store", "cache/app/1", "cache/app/deep/2", "trash/files/old.txt", "trash/info/old.txt.trashinfo"] {
+            File::options().write(true).open(dir.join(f)).unwrap().set_modified(yesterday).unwrap();
+        }
+        fs::create_dir_all(dir.join("cache/live")).unwrap();
+        fs::write(dir.join("cache/live/now.log"), "being written").unwrap();
+        fs::write(dir.join("fresh.tmp"), "being written").unwrap();
 
         let progress = AtomicUsize::new(0);
         let places = Places {
             trash: Some(dir.join("trash")),
+            trash_size: 0, // a trash the walk can see, like macOS and Linux have
             downloads: None,
             junk: vec![dir.join("cache"), dir.join("trash")],
             user: vec![dir.join("sub")],
@@ -425,7 +475,9 @@ mod tests {
         assert_eq!(junk.len(), 4);
         assert!(junk[0].path.ends_with("trash") && junk[0].size == 110); // the whole trash is one item
         assert!(junk[1].path.ends_with("cache/app") && junk[1].size == 6); // whole cache folder as one item
-        assert_eq!(progress.load(Ordering::Relaxed), 11); // node_modules and .git not walked
+        // Still in use, so not offered: a cache folder written a moment ago, and a fresh .tmp.
+        assert!(junk.iter().all(|i| !i.path.ends_with("cache/live") && !i.path.ends_with("fresh.tmp")));
+        assert_eq!(progress.load(Ordering::Relaxed), 13); // node_modules and .git not walked
         assert_eq!(items.len(), 6);
         assert_eq!(human_size(1536), "1.5 KB");
     }

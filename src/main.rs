@@ -291,6 +291,8 @@ struct App {
     confirm: bool,
     deleting: Option<deskmonk::Deletion>,
     status: String,
+    /// The last cleaning deleted nothing: the status line is a warning, not a result.
+    status_failed: bool,
     telemetry: Telemetry,
     autostart: bool,
     logo: Option<egui::TextureHandle>,
@@ -367,6 +369,7 @@ impl Default for App {
             confirm: false,
             deleting: None,
             status: String::new(),
+            status_failed: false,
             telemetry: Telemetry::load(),
             autostart: false,
             logo: None,
@@ -436,6 +439,7 @@ impl App {
         });
         self.items.clear();
         self.status.clear();
+        self.status_failed = false;
         self.phase = None;
         self.scanning = Some((rx, progress));
     }
@@ -488,15 +492,29 @@ impl App {
         let ok = self.deleting.take().unwrap().total - done.failed.len();
         self.telemetry.clean_done("gui", ok, done.freed);
         self.plan.record_clean(done.freed);
-        self.status = tf!(
-            "✔ {ok} öğe temizlendi, {} yer açıldı",
-            "✔ {ok} items cleaned, {} freed",
-            "✔ {ok} elementos limpiados, {} liberados",
-            human_size(done.freed)
-        );
-        if let Some(err) = done.first_error {
-            self.status += &tf!(" · {} öğe tamamen silinemedi: {err}", " · {} items could not be fully deleted: {err}", " · {} elementos no se pudieron borrar del todo: {err}", done.failed.len());
-        }
+        let n = done.failed.len();
+        // Windows keeps every open file locked, so a cleaning can fail for all of it; a grey "✔ 0 items
+        // cleaned" then reads as "the button does nothing". Lead with the reason and show it in red.
+        self.status_failed = ok == 0 && n > 0;
+        self.status = if self.status_failed {
+            tf!(
+                "⚠ {n} öğe silinemedi: {}",
+                "⚠ {n} items could not be deleted: {}",
+                "⚠ {n} elementos no se pudieron borrar: {}",
+                done.first_error.unwrap_or_default()
+            )
+        } else {
+            let mut s = tf!(
+                "✔ {ok} öğe temizlendi, {} yer açıldı",
+                "✔ {ok} items cleaned, {} freed",
+                "✔ {ok} elementos limpiados, {} liberados",
+                human_size(done.freed)
+            );
+            if let Some(err) = done.first_error {
+                s += &tf!(" · {n} öğe tamamen silinemedi: {err}", " · {n} items could not be fully deleted: {err}", " · {n} elementos no se pudieron borrar del todo: {err}");
+            }
+            s
+        };
         self.items.extend(done.failed);
     }
 
@@ -2106,7 +2124,8 @@ impl App {
                     } else {
                         &self.status
                     };
-                    ui.label(RichText::new(status).small().color(muted));
+                    ui.label(RichText::new(status).small().color(if self.status_failed { DANGER } else { muted }))
+                        .on_hover_text(status);
                 });
             },
         );

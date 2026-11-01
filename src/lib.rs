@@ -86,9 +86,8 @@ impl Deletion {
                 match outcome {
                     Ok(()) => result.freed += item.size,
                     Err(e) => {
-                        result
-                            .first_error
-                            .get_or_insert_with(|| format!("{}: {e}", item.path.display()));
+                        // Only the reason: failed items stay in the list, where their path is shown.
+                        result.first_error.get_or_insert_with(|| e.to_string());
                         result.failed.push(item);
                     }
                 }
@@ -110,6 +109,13 @@ impl Deletion {
 /// made writable first, and a failing entry does not stop the rest of the tree from being freed.
 /// The OS trash folder itself is emptied but kept, since the OS expects it to exist.
 fn remove(path: &Path) -> io::Result<()> {
+    // The Windows Recycle Bin is emptied through the OS: its folder is hidden and locked down, and the
+    // files in it are stored under names only the recycler understands. See [`scan::trash_dir`].
+    #[cfg(windows)]
+    if scan::trash_dir().as_deref() == Some(path) {
+        let items = trash::os_limited::list().map_err(io::Error::other)?;
+        return trash::os_limited::purge_all(items).map_err(io::Error::other);
+    }
     let meta = fs::symlink_metadata(path)?;
     if !meta.is_dir() {
         return fs::remove_file(path).or_else(|e| {
