@@ -3,12 +3,34 @@
 //! data-price="monthly|yearly" gets the price, and the language menu is filled in. Runs before the static assets
 //! only for the paths in wrangler.toml's run_worker_first.
 
-import { LANG_NAMES, LANGS, RTL, USD, money, pickLang, word, type Lang } from "./i18n";
+import { LANG_NAMES, LANGS, RTL, USD, countryOf, money, pickLang, word, type Lang } from "./i18n";
 import { esc } from "./admin";
 
 const PAGES = new Set(["/", "/index.html", "/pricing", "/pricing.html"]);
 
+const ADS_ID = "AW-18549735514";
+// No consent banner, so no Google tag where advertising cookies need prior consent: the EU, EEA, UK, Switzerland and Türkiye (where the controller is).
+const NO_ADS = new Set("AT BE BG HR CY CZ DK EE FI FR DE GR HU IE IT LV LT LU MT NL PL PT RO SK SI ES SE IS LI NO GB CH TR".split(" "));
+
+/** The Google tag for /ads.js. Empty where it may not run, or when the country is unknown; the browser's Global Privacy Control also stops it. */
+export function adsScript(req: Request): Response {
+  const country = countryOf(req);
+  const body = !country || NO_ADS.has(country) ? "" : `if (!navigator.globalPrivacyControl) {
+  window.dataLayer = window.dataLayer || [];
+  window.gtag = function () { dataLayer.push(arguments); };
+  gtag("js", new Date());
+  gtag("config", "${ADS_ID}");
+  var s = document.createElement("script");
+  s.async = true;
+  s.src = "https://www.googletagmanager.com/gtag/js?id=${ADS_ID}";
+  document.head.appendChild(s);
+}
+`;
+  return new Response(body, { headers: { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "private, no-cache" } });
+}
+
 export async function handleSite(req: Request, assets: Fetcher, path: string): Promise<Response | null> {
+  if (path === "/ads.js") return adsScript(req);
   if (!PAGES.has(path) || (req.method !== "GET" && req.method !== "HEAD")) return null;
   // Without the browser's If-None-Match: the same URL now has a body per language, so a 304 could show the wrong one.
   const res = await assets.fetch(new Request(req.url, { method: req.method }));

@@ -5,6 +5,7 @@ import { handleLicense, inCidr, mayActivate, refundLast, newKey, periodEnd, plan
 import { handleMail, keyMail, weekNumbers, weeklyText } from "../src/mail";
 import { buyPage, js, pickLang } from "../src/pages";
 import { LANGS, USD, money, word } from "../src/i18n";
+import { adsScript } from "../src/site";
 
 test("validates events the way server/ does", () => {
   const good = `{"install_id":"abc-123","version":"0.1.0","os":"linux","client":"tui","kind":"scan","files":10,"bytes":2048,"junk_bytes":2048}`;
@@ -157,6 +158,13 @@ test("buyer pages: language, unconfigured checkout, escaping", async () => {
   expect(live).not.toContain("</script><b>");
   expect(live).toContain('value="yearly" checked');
   expect(js("</script>")).toBe('"\\u003c/script>"');
+});
+
+test("the Google tag stays out where it needs consent, and when the country is unknown", async () => {
+  const ads = (country: string | null) =>
+    adsScript(Object.assign(new Request("https://deskmonk.app/ads.js"), country ? { cf: { country } } : {})).text();
+  expect(await ads("US")).toContain('gtag("config", "AW-18549735514")');
+  for (const c of ["DE", "NO", "GB", "CH", "TR", null]) expect(await ads(c)).toBe("");
 });
 
 test("language: chosen, then country, then browser; prices filled in", () => {
