@@ -74,7 +74,8 @@ fn cipher(password: &str, salt: &[u8]) -> Result<ChaCha20Poly1305, String> {
     Ok(ChaCha20Poly1305::new(Key::from_slice(&key)))
 }
 
-/// Encrypts `src` into `<src>.dmvault` next to it and returns that path. `src` itself is left in place.
+/// Encrypts `src` into `<src>.dmvault` next to it and returns that path, once the vault has been read back and
+/// opens with `password`. `src` itself is left in place; see [`destroy`].
 pub fn encrypt(src: &Path, password: &str, done: &AtomicU64) -> Result<PathBuf, String> {
     let name = src.file_name().ok_or_else(|| t("Geçersiz yol", "Invalid path", "Ruta no válida").to_string())?;
     let out = with_suffix(src, &format!(".{EXT}"));
@@ -104,7 +105,10 @@ pub fn encrypt(src: &Path, password: &str, done: &AtomicU64) -> Result<PathBuf, 
             tar.append_path_with_name(src, name)?;
         }
         tar.into_inner()?;
-        sealer.finish()
+        sealer.finish()?;
+        // Read back before anyone deletes the original: every chunk must open with this password.
+        io::copy(&mut open(&part, password, done).map_err(io::Error::other)?, &mut io::sink())?;
+        Ok(())
     })();
     match result.and_then(|()| fs::rename(&part, &out)) {
         Ok(()) => Ok(out),
@@ -115,9 +119,8 @@ pub fn encrypt(src: &Path, password: &str, done: &AtomicU64) -> Result<PathBuf, 
     }
 }
 
-/// Opens a vault next to itself and returns the restored file or folder. The vault is left in place.
-pub fn decrypt(vault: &Path, password: &str, done: &AtomicU64) -> Result<PathBuf, String> {
-    let parent = vault.parent().ok_or_else(|| t("Geçersiz yol", "Invalid path", "Ruta no válida").to_string())?;
+/// The decrypted content of a vault, as a tar stream; checks the password on the first chunk.
+fn open<'a>(vault: &Path, password: &str, done: &'a AtomicU64) -> Result<Opener<'a, BufReader<File>>, String> {
     let mut file = BufReader::new(File::open(vault).map_err(|e| e.to_string())?);
     let mut header = [0u8; HEADER];
     if file.read_exact(&mut header).is_err() || &header[..8] != MAGIC {
@@ -135,6 +138,13 @@ pub fn decrypt(vault: &Path, password: &str, done: &AtomicU64) -> Result<PathBuf
     if opener.next_chunk().is_err() {
         return Err(t("Yanlış şifre", "Wrong password", "Contraseña incorrecta").into());
     }
+    Ok(opener)
+}
+
+/// Opens a vault next to itself and returns the restored file or folder. The vault is left in place.
+pub fn decrypt(vault: &Path, password: &str, done: &AtomicU64) -> Result<PathBuf, String> {
+    let parent = vault.parent().ok_or_else(|| t("Geçersiz yol", "Invalid path", "Ruta no válida").to_string())?;
+    let mut opener = open(vault, password, done)?;
     // Unpacked into a hidden folder first, so a damaged vault leaves nothing half-restored.
     let tmp = parent.join(format!(".deskmonk-open-{}", uuid::Uuid::new_v4()));
     let result = (|| -> io::Result<PathBuf> {
@@ -153,6 +163,28 @@ pub fn decrypt(vault: &Path, password: &str, done: &AtomicU64) -> Result<PathBuf
     })();
     let _ = fs::remove_dir_all(&tmp);
     result.map_err(|e| e.to_string())
+}
+
+/// Deletes the unencrypted original for good after encrypting: each file is overwritten with zeros, then removed.
+/// Not the Trash, which would keep a readable copy. Symlinks are removed, not followed.
+// shortcut: on SSDs and copy-on-write file systems (Btrfs, APFS) old blocks may survive the overwrite; full-disk encryption covers that.
+pub fn destroy(src: &Path) -> io::Result<()> {
+    for entry in walkdir::WalkDir::new(src).into_iter().flatten().filter(|e| e.file_type().is_file()) {
+        if let Ok(mut file) = fs::OpenOptions::new().write(true).open(entry.path()) {
+            let len = entry.metadata().map_or(0, |m| m.len());
+            let zeros = vec![0u8; CHUNK];
+            let mut left = len;
+            while left > 0 {
+                let n = left.min(CHUNK as u64) as usize;
+                if file.write_all(&zeros[..n]).is_err() {
+                    break;
+                }
+                left -= n as u64;
+            }
+            let _ = file.sync_all();
+        }
+    }
+    if src.symlink_metadata()?.is_dir() { fs::remove_dir_all(src) } else { fs::remove_file(src) }
 }
 
 /// Encrypts what is written to it, a chunk at a time.
@@ -271,12 +303,15 @@ mod tests {
         assert!(!src.exists());
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 2, "no temp folders left: {:?}", fs::read_dir(&dir).unwrap().collect::<Vec<_>>());
 
-        // A single file works the same way.
+        // A single file works the same way; destroy leaves nothing of it.
         let file = dir.join("orig/note.txt");
         let vault = encrypt(&file, "x", &done).unwrap();
-        fs::remove_file(&file).unwrap();
+        destroy(&file).unwrap();
+        assert!(!file.exists());
         assert_eq!(decrypt(&vault, "x", &done).unwrap(), file);
         assert_eq!(fs::read_to_string(&file).unwrap(), "hello");
+        destroy(&dir.join("orig")).unwrap();
+        assert!(!dir.join("orig").exists());
         fs::remove_dir_all(&dir).unwrap();
     }
 }

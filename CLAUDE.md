@@ -8,6 +8,12 @@ The desktop app's top bar, its window titles, the menu bar / tray menu, the term
 app all show the version number, read from the build (`CARGO_PKG_VERSION`, `PackageInfo`), never typed in. Any new
 window or screen shows it too, without being asked.
 
+## The icon stays in the Dock while deskMonk is open
+
+As long as deskMonk runs, its icon is in the Dock / taskbar, also while the window is hidden: macOS hides the app
+on close (never an accessory app without a Dock icon), and on Linux the window's app id `deskmonk` must match an
+installed `deskmonk.desktop` (packages and install.sh install one; the AppImage adds its own on start).
+
 ## Releasing: one machine per platform
 
 The Mac builds the Mac app, a Windows PC the Windows app, a Linux PC the Linux app. All three publish to the same

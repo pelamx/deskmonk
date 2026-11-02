@@ -248,6 +248,8 @@ fn the_app_works() {
     let vault_file = h.state().vault_done.as_ref().unwrap().0.clone();
     assert!(deskmonk::vault::is_vault(&vault_file), "{} is a vault", vault_file.display());
     assert!(!secret.exists(), "the readable copy is gone");
+    let trash = deskmonk::scan::trash_dir().unwrap_or_default();
+    assert!(!trash.join("files/secret.txt").exists() && !trash.join("secret.txt").exists(), "not even in the Trash");
     let on_disk = fs::read(&vault_file).unwrap();
     assert!(!on_disk.windows(64).any(|w| content.windows(64).next() == Some(w)), "the vault doesn't contain the text");
 

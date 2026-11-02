@@ -59,6 +59,41 @@ const NEON: [Color32; 8] = [
 #[cfg(all(test, unix))]
 mod gui_tests;
 
+/// The AppImage installs nothing, and a Wayland dock or taskbar shows an app's icon only through a .desktop file named
+/// after its app id, so the AppImage would sit there without one. It adds its own launcher and icon, kept pointing at
+/// wherever the AppImage is now. A launcher from a package or install.sh is left alone.
+#[cfg(target_os = "linux")]
+fn add_appimage_launcher() {
+    let (Some(appimage), Some(data)) = (std::env::var_os("APPIMAGE"), dirs::data_dir()) else { return };
+    if ["/usr/share", "/usr/local/share"].iter().any(|d| Path::new(d).join("applications/deskmonk.desktop").exists()) {
+        return;
+    }
+    let desktop = data.join("applications/deskmonk.desktop");
+    let existing = std::fs::read_to_string(&desktop).ok();
+    if let Some(text) = appimage_launcher(existing.as_deref(), &appimage.to_string_lossy()) {
+        let icon = data.join("icons/hicolor/256x256/apps/deskmonk.png");
+        let written = std::fs::create_dir_all(desktop.parent().unwrap())
+            .and_then(|()| std::fs::write(&desktop, text))
+            .and_then(|()| std::fs::create_dir_all(icon.parent().unwrap()))
+            .and_then(|()| std::fs::write(&icon, include_bytes!("../assets/icon.png")));
+        if let Err(e) = written {
+            eprintln!("could not add the AppImage launcher: {e}");
+        }
+    }
+}
+
+/// The launcher to write for the AppImage at `appimage`, or None when `existing` is already right or is another install's.
+#[cfg(target_os = "linux")]
+fn appimage_launcher(existing: Option<&str>, appimage: &str) -> Option<String> {
+    // Desktop Entry spec: a quoted Exec argument escapes these with a backslash.
+    let quoted: String = appimage.chars().flat_map(|c| if "\\\"`$".contains(c) { vec!['\\', c] } else { vec![c] }).collect();
+    let text = include_str!("../assets/deskmonk.desktop").replace("Exec=deskmonk", &format!("Exec=\"{quoted}\""));
+    match existing {
+        Some(old) if old == text || !old.contains(".AppImage") => None,
+        _ => Some(text),
+    }
+}
+
 fn main() -> eframe::Result {
     deskmonk::use_real_home();
     i18n::init();
@@ -76,6 +111,8 @@ fn main() -> eframe::Result {
     {
         return unlock_prompt(app.into(), window_icon);
     }
+    #[cfg(target_os = "linux")]
+    add_appimage_launcher();
     let options = native_options(
         egui::ViewportBuilder::default()
             .with_inner_size([1080.0, 700.0])
@@ -1820,7 +1857,8 @@ impl App {
         let max = (!self.plan.is_pro()).then_some(plan::FREE_VAULT_SIZE);
         std::thread::spawn(move || {
             let size = vault::work_size(&src);
-            n.store(size, Ordering::Relaxed);
+            // Encrypting reads the new vault back once, so it counts twice.
+            n.store(if vault::is_vault(&src) { size } else { size * 2 }, Ordering::Relaxed);
             let result = if vault::is_vault(&src) {
                 vault::decrypt(&src, &password, &d)
             } else if max.is_some_and(|max| size > max) {
@@ -1828,8 +1866,10 @@ impl App {
             } else {
                 vault::encrypt(&src, &password, &d)
             };
-            // The vault replaces the readable copy, and the opened copy replaces the vault; the Trash keeps either recoverable.
-            let _ = tx.send(result.map(|out| (out, deskmonk::to_trash(&src).err().map(|e| e.to_string()))));
+            // The checked vault replaces the readable copy for good, so it opens only here; the opened copy replaces the
+            // vault, which the Trash keeps (still encrypted).
+            let cleanup = |src: &Path| if vault::is_vault(src) { deskmonk::to_trash(src).map(|_| ()).map_err(|e| e.to_string()) } else { vault::destroy(src).map_err(|e| e.to_string()) };
+            let _ = tx.send(result.map(|out| (out, cleanup(&src).err())));
             ctx.request_repaint();
         });
         self.vault_job = Some((rx, done, total));
@@ -1863,14 +1903,17 @@ impl App {
                     });
                 });
                 match trash_error {
+                    Some(e) if *encrypted => {
+                        ui.label(RichText::new(tf!("Şifresiz asıl dosya silinemedi: {e}", "Could not delete the unencrypted original: {e}", "No se pudo borrar el original sin cifrar: {e}")).color(DANGER));
+                    }
                     Some(e) => {
                         ui.label(RichText::new(tf!("Kaynak çöp kutusuna taşınamadı: {e}", "Could not move the source to the Trash: {e}", "No se pudo mover el origen a la papelera: {e}")).color(DANGER));
                     }
                     None if *encrypted => {
                         ui.label(RichText::new(t(
-                            "Şifresiz asıl dosya çöp kutusuna taşındı. Okunabilir kopya kalmasın diye çöp kutusunu boşaltın.",
-                            "The unencrypted original went to the Trash. Empty the Trash so no readable copy is left.",
-                            "El original sin cifrar se movió a la papelera. Vacíe la papelera para que no quede ninguna copia legible.",
+                            "Şifresiz asıl dosya tamamen silindi, çöp kutusunda da kopyası yok. Yalnızca buradaki Kasa sekmesinden şifreyle açılır.",
+                            "The unencrypted original was deleted for good, with no copy in the Trash. It opens only here in the Vault tab, with the password.",
+                            "El original sin cifrar se borró definitivamente, sin copia en la papelera. Solo se abre aquí, en la pestaña Caja fuerte, con la contraseña.",
                         )).color(muted));
                     }
                     None => {
@@ -1903,8 +1946,8 @@ impl App {
                 let wrong = !self.vault_error.is_empty();
                 centered_column(ui, 340.0, |ui| {
                     let subtitle = match (encrypting, target.is_dir()) {
-                        (true, true) => t("Klasör şifrelenecek", "This folder will be encrypted", "Esta carpeta se cifrará"),
-                        (true, false) => t("Dosya şifrelenecek", "This file will be encrypted", "Este archivo se cifrará"),
+                        (true, true) => t("Klasör şifrelenecek; şifresiz asıl klasör silinir", "This folder will be encrypted; the unencrypted original is deleted", "Esta carpeta se cifrará; el original sin cifrar se borra"),
+                        (true, false) => t("Dosya şifrelenecek; şifresiz asıl dosya silinir", "This file will be encrypted; the unencrypted original is deleted", "Este archivo se cifrará; el original sin cifrar se borra"),
                         _ => t("Açmak için kasanın şifresini girin", "Enter the vault's password to open it", "Escriba la contraseña de la caja fuerte para abrirla"),
                     };
                     form_header(ui, Some((icon, &name)), &name, subtitle);
@@ -3758,3 +3801,17 @@ fn store_restore() {
 
 #[cfg(not(feature = "appstore"))]
 fn store_restore() {}
+
+#[cfg(all(test, target_os = "linux"))]
+mod launcher_tests {
+    #[test]
+    fn appimage_launcher_follows_the_appimage_and_leaves_other_installs_alone() {
+        let new = super::appimage_launcher(None, "/home/a/Downloads/deskMonk-0.5.9-linux-x86_64.AppImage").unwrap();
+        assert!(new.contains("Exec=\"/home/a/Downloads/deskMonk-0.5.9-linux-x86_64.AppImage\"\n") && new.contains("Icon=deskmonk"));
+        assert_eq!(super::appimage_launcher(Some(&new), "/home/a/Downloads/deskMonk-0.5.9-linux-x86_64.AppImage"), None);
+        assert!(super::appimage_launcher(Some(&new), "/opt/deskMonk-0.6.0-linux-x86_64.AppImage").unwrap().contains("/opt/deskMonk-0.6.0"));
+        let installed = include_str!("../assets/deskmonk.desktop").replace("Exec=deskmonk", "Exec=/home/a/.local/bin/deskmonk");
+        assert_eq!(super::appimage_launcher(Some(&installed), "/tmp/x.AppImage"), None);
+        assert!(super::appimage_launcher(None, "/a b/$x\"y.AppImage").unwrap().contains(r#"Exec="/a b/\$x\"y.AppImage""#));
+    }
+}
