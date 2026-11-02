@@ -231,7 +231,9 @@ const subsQuery = (db: D1Database) =>
   db.prepare(
     `SELECT s.id, s.customer_id, s.email, s.plan, s.status, s.period_end, s.created_at, s.license_key,
             s.install_id, s.txn, s.ref, s.event_at, (SELECT COUNT(*) FROM activations a WHERE a.license_key = s.license_key) AS devices,
-            (SELECT group_concat(a.install_id) FROM activations a WHERE a.license_key = s.license_key) AS device_ids
+            (SELECT group_concat(a.install_id) FROM activations a WHERE a.license_key = s.license_key) AS device_ids,
+            EXISTS (SELECT 1 FROM ignored_installs i WHERE i.install_id = s.install_id
+                    OR i.install_id IN (SELECT a.install_id FROM activations a WHERE a.license_key = s.license_key)) AS mine
        FROM subscriptions s
       ORDER BY COALESCE(s.created_at, 0) DESC LIMIT 5000`,
   );
@@ -328,9 +330,10 @@ async function dashboard(env: Env, query: string, notice: Notice): Promise<strin
 
   // Subscriptions
   const live = (s: Row) => s.period_end > t && s.status !== "canceled";
-  const paddleSubs = subsAll.filter((s) => s.customer_id !== "manual");
+  // Paying customers only: a subscription on a computer marked "This is me", or under the email of one, is yours.
+  const ownEmails = new Set(subsAll.filter((s) => s.mine && s.email).map((s) => s.email));
+  const paddleSubs = subsAll.filter((s) => s.customer_id !== "manual" && !s.mine && !ownEmails.has(s.email));
   const livePaddle = paddleSubs.filter(live);
-  const liveManual = subsAll.filter((s) => s.customer_id === "manual" && live(s));
   const appstorePro = plans.filter((p) => p.channel === "appstore" && p.plan === "pro").reduce((a, p) => a + p.n, 0);
   const playstorePro = plans.filter((p) => p.channel === "playstore" && p.plan === "pro").reduce((a, p) => a + p.n, 0);
   const proInstalls = plans.filter((p) => p.plan === "pro").reduce((a, p) => a + p.n, 0);
@@ -377,7 +380,7 @@ async function dashboard(env: Env, query: string, notice: Notice): Promise<strin
     ["mobile", "phone", "Mobile", ""],
     ["analytics", "chart", "Analytics", ""],
     ["users", "users", "Users", count(real)],
-    ["subscriptions", "key", "Subscriptions", ending.length ? count(ending.length, "warn") : count(livePaddle.length + liveManual.length)],
+    ["subscriptions", "key", "Subscriptions", ending.length ? count(ending.length, "warn") : count(subsAll.filter(live).length)],
     ["revenue", "wallet", "Revenue", ""],
     ["tools", "tools", "Tools", ""],
   ]
@@ -420,8 +423,8 @@ async function dashboard(env: Env, query: string, notice: Notice): Promise<strin
   <section class="card">
     <p class="label">Overall</p>
     <div class="grid five">
-      ${tile({ icon: "star", tone: "t-orange", title: "Pro now", value: livePaddle.length + liveManual.length + appstorePro + playstorePro,
-        rows: bars3([["Paddle", livePaddle.length, "web"], ...storeBars(proStore, "n"), ["Manual", liveManual.length, "manual"]]),
+      ${tile({ icon: "star", tone: "t-orange", title: "Pro now", value: livePaddle.length + appstorePro + playstorePro, hint: "Paying: Paddle + app stores",
+        rows: bars3([["Paddle", livePaddle.length, "web"], ...storeBars(proStore, "n")]),
         foot: `${monthly} monthly · ${yearly} yearly on Paddle`, footIcon: "calendar" })}
       ${tile({ icon: "bars", tone: "t-violet", title: "Active this week", value: sum(active, "week"), rows: osBars(byPlatform(active, "week")),
         foot: `${freeInstalls} free · ${proInstalls} Pro (last 30 days)`, footIcon: "users" })}

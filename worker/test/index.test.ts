@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { compareVersions, esc, hardwareHtml, humanSize, mobileCard, mobileLive, worldMap } from "../src/admin";
+import { compareVersions, esc, handleAdmin, hardwareHtml, humanSize, mobileCard, mobileLive, worldMap } from "../src/admin";
 import { parseEvent } from "../src/index";
 import { handleLicense, inCidr, mayActivate, refundLast, newKey, periodEnd, planOf, verifySignature } from "../src/license";
 import { handleMail, keyMail, weekNumbers, weeklyText } from "../src/mail";
@@ -218,7 +218,7 @@ function memoryDb(): any {
     });
     return { bind: (...args: unknown[]) => run(args), ...run([]) };
   };
-  return { prepare, exec: (sql: string) => db.exec(sql), batch: async (stmts: any[]) => Promise.all(stmts.map((st) => st.run())) };
+  return { prepare, exec: (sql: string) => db.exec(sql), batch: async (stmts: any[]) => Promise.all(stmts.map((st) => st.all())) };
 }
 
 test("the key mail carries the key and how to use it", () => {
@@ -267,6 +267,21 @@ test("weekly numbers leave out the operator's own installs", async () => {
   expect(n).toMatchObject({ newInstalls: 2, activeInstalls: 3, opens: 3, newSubs: 1, monthly: 1, yearly: 1, canceled: 1, messages: 0 });
   expect(n.os).toEqual([{ os: "macos", n: 2 }, { os: "windows", n: 1 }]);
   expect(weeklyText(n)).toContain("New: 2");
+});
+
+test("Pro now counts only paying customers, not your own computers or manual grants", async () => {
+  (crypto.subtle as any).timingSafeEqual ??= (a: Uint8Array, b: Uint8Array) => a.every((x, i) => x === b[i]); // Workers-only API
+  const env = { DB: memoryDb(), ADMIN_TOKEN: "test" } as any;
+  const far = 2_000_000_000;
+  env.DB.exec(`INSERT INTO ignored_installs VALUES ('my-mac', 0)`);
+  env.DB.exec(`INSERT INTO subscriptions(id, customer_id, email, status, period_end, license_key, event_at, plan) VALUES
+    ('real', 'c1', 'buyer@x.com', 'active', ${far}, 'K1', '', 'monthly'),
+    ('grant', 'manual', 'me@x.com', 'active', ${far}, 'K2', '', 'yearly'),
+    ('test-buy', 'c2', 'me@x.com', 'active', ${far}, 'K3', '', 'monthly')`);
+  env.DB.exec(`INSERT INTO activations VALUES ('K2', 'my-mac', 0), ('K3', 'unseen-copy', 0)`);
+  const res = await handleAdmin(new Request("https://deskmonk.app/admin", { headers: { Authorization: `Basic ${btoa("admin:test")}` } }), env, "/admin");
+  const page = await res!.text();
+  expect(page).toMatch(/Pro now<small>[^<]*<\/small><\/p><\/div>\s*<div class="v">1<\/div>/);
 });
 
 test("removing a computer frees its place, also on the computer it was bought on", async () => {
