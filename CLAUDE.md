@@ -46,4 +46,6 @@ push. Don't work around it: fix what it reports. `DESKMONK_DEPLOY_ANYWAY=1` skip
 
 `cargo test` runs the real GUI invisibly (`src/gui_tests.rs`). On a Mac, set `DESKMONK_TEST_HOME` to a folder on a
 throwaway disk image so its test files don't land in the real Trash. Never drive the GUI with synthetic keyboard or
-mouse input. The website: `npm test` in `worker/`.
+mouse input. Start a release build only with `DESKMONK_NO_STATS=1` set (and a throwaway HOME), so the test run sends
+no stats; every start of a release build otherwise counts as a new installation in /admin. A test run that did get
+counted is marked "mine" in /admin. The website: `npm test` in `worker/`.

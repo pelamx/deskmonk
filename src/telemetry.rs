@@ -119,7 +119,8 @@ impl Telemetry {
     }
 
     fn post(&self, mut event: serde_json::Value) {
-        let Some(url) = URL else {
+        // DESKMONK_NO_STATS=1: test runs of release builds (packaging checks, CI) send nothing, so /admin counts only real users.
+        let Some(url) = URL.filter(|_| std::env::var_os("DESKMONK_NO_STATS").is_none()) else {
             return;
         };
         event["install_id"] = self.install_id.clone().into();
