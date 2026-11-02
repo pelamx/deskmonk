@@ -39,6 +39,8 @@ struct App {
     phase: Option<Phase>,
     prompt: Prompt,
     deleting: Option<deskmonk::Deletion>,
+    /// What the last cleaning moved to the Trash, for u (macOS, see deskmonk::Undo).
+    undo: deskmonk::Undo,
     status: String,
     telemetry: Telemetry,
     plan: Plan,
@@ -74,7 +76,7 @@ fn main() -> io::Result<()> {
     let (tx, update_check) = channel();
     std::thread::spawn(move || {
         // Only announced here: the terminal version may be the static Linux build, which the archives don't replace.
-        if let Some(deskmonk::update::Found::Available(v) | deskmonk::update::Found::Installed(v)) = deskmonk::update::check(false) {
+        if let Some(deskmonk::update::Found::Available(v) | deskmonk::update::Found::Installed(v)) = deskmonk::update::check(false, |_| {}) {
             let _ = tx.send(v);
         }
     });
@@ -92,6 +94,7 @@ fn main() -> io::Result<()> {
         phase: None,
         prompt,
         deleting: None,
+        undo: Default::default(),
         status: String::new(),
         telemetry,
         plan,
@@ -137,6 +140,8 @@ impl App {
             tx.send((None, items))
         });
         self.items.clear();
+        // A new list may already hold what is in the Trash; putting it back would list it twice.
+        self.undo = Default::default();
         self.scanning = Some((rx, progress));
     }
 
@@ -172,16 +177,16 @@ impl App {
                 self.items = items;
             }
             if let Some(done) = self.deleting.as_ref().and_then(|d| d.poll()) {
-                let ok = self.deleting.take().unwrap().total - done.failed.len();
+                let n = done.failed.len();
+                let ok = self.deleting.take().unwrap().total - n;
                 self.telemetry.clean_done("tui", ok, done.freed);
                 self.plan.record_clean(done.freed);
                 let freed = human_size(done.freed);
                 self.status = tf!("{ok} öğe temizlendi ({freed})", "{ok} items cleaned ({freed})", "{ok} elementos limpiados ({freed})");
-                if let Some(err) = done.first_error {
-                    let n = done.failed.len();
+                if let Some(err) = &done.first_error {
                     self.status += &tf!(", {n} tamamen silinemedi: {err}", ", {n} not fully deleted: {err}", ", {n} no se borraron del todo: {err}");
                 }
-                self.items.extend(done.failed);
+                self.undo = done.into_list(&mut self.items);
             }
             terminal.draw(|f| self.draw(f))?;
             if !event::poll(Duration::from_millis(100))? {
@@ -275,11 +280,11 @@ impl App {
                             self.list.select_next();
                         }
                     }
-                    KeyCode::Char(c @ ('a' | 'n')) => deskmonk::set_selection(
-                        &mut self.items,
-                        Some(Category::ALL[self.tab]),
-                        c == 'a',
-                    ),
+                    KeyCode::Char(c @ ('a' | 'n')) => {
+                        if deskmonk::set_selection(&mut self.items, Some(Category::ALL[self.tab]), c == 'a') == 0 && c == 'a' {
+                            self.status = t("Bu listede seçilecek bir şey yok.", "There is nothing to select in this list.", "No hay nada que seleccionar en esta lista.").into();
+                        }
+                    }
                     // The final scan list would bring deleted items back, so deleting waits for it.
                     KeyCode::Char('d' | 'D') if self.scanning.is_some() => {
                         self.status = t(
@@ -305,6 +310,13 @@ impl App {
                         self.prompt = Prompt::Delete
                     }
                     KeyCode::Char('r') if self.scanning.is_none() => self.start_scan(),
+                    KeyCode::Char('u') if !self.undo.is_empty() && self.deleting.is_none() => {
+                        let (n, err) = std::mem::take(&mut self.undo).put_back(&mut self.items);
+                        self.status = tf!("{n} öğe yerine kondu", "{n} items put back", "{n} elementos devueltos a su sitio");
+                        if let Some(err) = err {
+                            self.status += &tf!(", bazıları konamadı: {err}", ", some could not be: {err}", ", algunos no se pudieron: {err}");
+                        }
+                    }
                     KeyCode::Char('p') if plan::URL.is_some() => self.prompt = Prompt::Key(String::new()),
                     KeyCode::Char('t') if telemetry::URL.is_some() => {
                         let on = self.telemetry.consent != Some(true);
@@ -425,10 +437,11 @@ impl App {
         } else {
             ""
         };
+        let ukey = if self.undo.is_empty() { "" } else { t("  u geri koy", "  u put back", "  u devolver") };
         let keys = tf!(
-            "↑↓ gezin  boşluk seç  a/n tümü/hiçbiri  ←→ kategori  d temizle  D hepsini kalıcı sil  r yeniden tara{tkey}{pkey}  l dil  q çık",
-            "↑↓ move  space select  a/n all/none  ←→ category  d clean  D delete all for good  r rescan{tkey}{pkey}  l language  q quit",
-            "↑↓ mover  espacio elegir  a/n todo/nada  ←→ categoría  d limpiar  D borrar todo definitivamente  r reanalizar{tkey}{pkey}  l idioma  q salir"
+            "↑↓ gezin  boşluk seç  a/n tümü/hiçbiri  ←→ kategori  d temizle  D hepsini kalıcı sil{ukey}  r yeniden tara{tkey}{pkey}  l dil  q çık",
+            "↑↓ move  space select  a/n all/none  ←→ category  d clean  D delete all for good{ukey}  r rescan{tkey}{pkey}  l language  q quit",
+            "↑↓ mover  espacio elegir  a/n todo/nada  ←→ categoría  d limpiar  D borrar todo definitivamente{ukey}  r reanalizar{tkey}{pkey}  l idioma  q salir"
         );
         f.render_widget(Paragraph::new(keys).dim(), help);
 

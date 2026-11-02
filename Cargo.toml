@@ -3,12 +3,12 @@ members = ["server"]
 
 [package]
 name = "deskmonk"
-version = "0.5.6"
+version = "0.5.7"
 edition = "2024"
 
 [features]
 default = ["gui", "tui"]
-gui = ["dep:eframe", "dep:rfd", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation"]
+gui = ["dep:eframe", "dep:rfd", "dep:objc2-app-kit", "dep:tray-icon", "dep:ksni"]
 tui = ["dep:ratatui"]
 # Mac App Store build: sandboxed, Pro through Apple subscriptions (StoreKit), no App Lock. See packaging/appstore/.
 appstore = ["gui"]
@@ -43,13 +43,22 @@ walkdir = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Already in the tree via eframe; used to hide the app when its window is closed, and for app icons.
-objc2 = { version = "0.6", optional = true }
+objc2 = "0.6"
 objc2-app-kit = { version = "0.3", optional = true, default-features = false, features = ["std", "NSApplication", "NSResponder", "NSWorkspace", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSGraphics", "NSGraphicsContext"] }
-objc2-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "NSString", "NSGeometry", "NSURL", "NSData", "NSError", "NSArray"] }
+# Not optional: the library moves files to the Trash through NSFileManager (lib.rs, to_trash).
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSGeometry", "NSURL", "NSData", "NSError", "NSArray", "NSFileManager"] }
 
 [target.'cfg(unix)'.dependencies]
 # Already in the tree; statvfs and page-cache control for the disk speed test.
 libc = "0.2"
+
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+# The menu bar / notification area icon (src/tray.rs).
+tray-icon = { version = "0.26.1", default-features = false, optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The status tray over D-Bus, without GTK (src/tray.rs).
+ksni = { version = "0.3.7", default-features = false, features = ["blocking", "async-io"], optional = true }
 
 # macOS 27's dyld rejects some stripped proc-macro dylibs ("mis-aligned LINKEDIT string pool"), which rustc reports as "can't find crate".
 [profile.release.build-override]

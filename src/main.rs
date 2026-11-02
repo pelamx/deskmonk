@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 #[cfg(target_os = "macos")]
 mod access;
+mod tray;
 #[cfg(feature = "appstore")]
 mod store;
 
@@ -90,6 +91,13 @@ fn main() -> eframe::Result {
         Box::new(|cc| {
             setup_style(&cc.egui_ctx);
             let mut app = App::default();
+            let (tray_tx, tray_rx) = channel();
+            let tray_ctx = cc.egui_ctx.clone();
+            app.tray = tray::start(move |action| {
+                let _ = tray_tx.send(action);
+                tray_ctx.request_repaint();
+            });
+            app.tray_rx = Some(tray_rx);
             app.telemetry.started("gui");
             let (tx, rx) = channel();
             let ctx = cc.egui_ctx.clone();
@@ -99,7 +107,12 @@ fn main() -> eframe::Result {
                 std::thread::sleep(Duration::from_secs(if cfg!(windows) { 10 } else { 0 }));
                 update::tidy();
                 loop {
-                    if let Some(found) = update::check(true) {
+                    let (early, early_ctx) = (tx.clone(), ctx.clone());
+                    let downloading = move |v: &str| {
+                        let _ = early.send(update::Found::Downloading(v.into()));
+                        early_ctx.request_repaint();
+                    };
+                    if let Some(found) = update::check(true, downloading) {
                         let installed = matches!(found, update::Found::Installed(_));
                         if tx.send(found).is_err() || installed {
                             break;
@@ -413,6 +426,12 @@ struct App {
     has_scanned: bool,
     confirm: bool,
     deleting: Option<deskmonk::Deletion>,
+    /// The menu bar / tray icon and its clicks; `quitting` lets Quit close the window for real on macOS.
+    tray: Option<tray::Tray>,
+    tray_rx: Option<Receiver<tray::Action>>,
+    quitting: bool,
+    /// What the last cleaning moved to the Trash, for "Put back" (macOS, see deskmonk::Undo).
+    undo: deskmonk::Undo,
     status: String,
     telemetry: Telemetry,
     autostart: bool,
@@ -500,6 +519,10 @@ impl Default for App {
             has_scanned: false,
             confirm: false,
             deleting: None,
+            tray: None,
+            tray_rx: None,
+            quitting: false,
+            undo: Default::default(),
             status: String::new(),
             telemetry: Telemetry::load(),
             autostart: false,
@@ -578,6 +601,8 @@ impl App {
         });
         self.items.clear();
         self.status.clear();
+        // A new list may already hold what is in the Trash; putting it back would list it twice.
+        self.undo = Default::default();
         self.phase = None;
         self.scanning = Some((rx, progress));
     }
@@ -628,7 +653,8 @@ impl App {
         let Some(done) = self.deleting.as_ref().and_then(|d| d.poll()) else {
             return;
         };
-        let ok = self.deleting.take().unwrap().total - done.failed.len();
+        let failed = done.failed.len();
+        let ok = self.deleting.take().unwrap().total - failed;
         self.telemetry.clean_done("gui", ok, done.freed);
         self.plan.record_clean(done.freed);
         let cleaned = tf!(
@@ -637,15 +663,24 @@ impl App {
             "✔ {ok} elementos limpiados, {} liberados",
             human_size(done.freed)
         );
-        self.status = match done.first_error {
+        self.status = match &done.first_error {
             // The failure comes first: the footer cuts off a long line.
             Some(err) => {
-                let failed = tf!("{FAILED} {} öğe tamamen silinemedi: {err}", "{FAILED} {} items could not be fully deleted: {err}", "{FAILED} {} elementos no se pudieron borrar del todo: {err}", done.failed.len());
-                if ok > 0 { format!("{failed} · {cleaned}") } else { failed }
+                let msg = tf!("{FAILED} {} öğe tamamen silinemedi: {err}", "{FAILED} {} items could not be fully deleted: {err}", "{FAILED} {} elementos no se pudieron borrar del todo: {err}", failed);
+                if ok > 0 { format!("{msg} · {cleaned}") } else { msg }
             }
             None => cleaned,
         };
-        self.items.extend(done.failed);
+        self.undo = done.into_list(&mut self.items);
+    }
+
+    /// Moves what the last cleaning sent to the Trash back to where it was.
+    fn put_back(&mut self) {
+        let (n, err) = std::mem::take(&mut self.undo).put_back(&mut self.items);
+        self.status = tf!("↩ {n} öğe yerine kondu", "↩ {n} items put back", "↩ {n} elementos devueltos a su sitio");
+        if let Some(err) = err {
+            self.status += &tf!(" · bazıları konamadı: {err}", " · some could not be: {err}", " · algunos no se pudieron: {err}");
+        }
     }
 
     fn totals(&self, cat: Option<Category>, only_selected: bool) -> (usize, u64) {
@@ -876,8 +911,10 @@ impl App {
                 if ui.add_enabled(idle, egui::Button::new(t("Seçimi kaldır", "Deselect", "Quitar selección"))).clicked() {
                     deskmonk::set_selection(&mut self.items, Some(tab), false);
                 }
-                if ui.add_enabled(idle, egui::Button::new(t("Tümünü seç", "Select all", "Seleccionar todo"))).clicked() {
-                    deskmonk::set_selection(&mut self.items, Some(tab), true);
+                if ui.add_enabled(idle, egui::Button::new(t("Tümünü seç", "Select all", "Seleccionar todo"))).clicked()
+                    && deskmonk::set_selection(&mut self.items, Some(tab), true) == 0
+                {
+                    self.status = t("Bu listede seçilecek bir şey yok.", "There is nothing to select in this list.", "No hay nada que seleccionar en esta lista.").into();
                 }
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     let title = RichText::new(format!("{}  {}", icon(tab), tab.label()))
@@ -1583,11 +1620,13 @@ impl App {
     /// Asks once per update to restart into it (or, where it couldn't install itself, to download it); "Later" leaves
     /// only the top bar button, and an installed update opens at the next start anyway.
     fn update_dialog(&mut self, ctx: &egui::Context) {
-        let (Some(found), Some(site)) = (self.new_version.clone(), plan::URL) else { return };
+        // Only a build with the site finds updates; the tests set one directly.
+        let (Some(found), site) = (self.new_version.clone(), plan::URL.unwrap_or("https://deskmonk.app")) else { return };
         let (_, _, _, muted) = palette(ctx.global_style().visuals.dark_mode);
         let (installed, v) = match &found {
             update::Found::Installed(v) => (true, v.clone()),
             update::Found::Available(v) => (false, v.clone()),
+            update::Found::Downloading(_) => return,
         };
         let busy = self.busy();
         let modal = egui::Modal::new(egui::Id::new("update")).frame(egui::Frame::popup(&ctx.global_style()).inner_margin(Margin::same(26))).show(ctx, |ui| {
@@ -2453,6 +2492,24 @@ impl App {
                 if ui.add_enabled(!self.items.is_empty() && self.deleting.is_none() && self.scanning.is_none(), all).clicked() {
                     deskmonk::set_selection(&mut self.items, None, true);
                 }
+                if !self.undo.is_empty() && self.deleting.is_none() {
+                    ui.add_space(8.0);
+                    let back = egui::Button::new(RichText::new(t("↩  Geri koy", "↩  Put back", "↩  Devolver")).size(15.0))
+                        .min_size(vec2(110.0, 40.0))
+                        .corner_radius(10);
+                    if ui
+                        .add(back)
+                        .on_hover_text(tf!(
+                            "Son temizlikte çöp kutusuna giden {} öğeyi eski yerine taşır.",
+                            "Moves the {} items the last cleaning sent to the Trash back to where they were.",
+                            "Devuelve a su sitio los {} elementos que la última limpieza envió a la papelera.",
+                            self.undo.len()
+                        ))
+                        .clicked()
+                    {
+                        self.put_back();
+                    }
+                }
                 ui.add_space(12.0);
                 ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
@@ -2475,6 +2532,20 @@ impl App {
     }
 }
 
+/// Shows the window again (hidden, minimized or behind others) and gives it the focus.
+fn bring_to_front(ctx: &egui::Context) {
+    #[cfg(target_os = "macos")]
+    if let Some(mtm) = objc2::MainThreadMarker::new() {
+        let ns_app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+        ns_app.unhide(None);
+        #[allow(deprecated)] // `activate` needs macOS 14; this app supports 11+.
+        ns_app.activateIgnoringOtherApps(true);
+    }
+    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+}
+
 impl eframe::App for App {
     // macOS: the close button hides the app instead of quitting, so a scan or cleaning keeps running and
     // clicking the Dock icon brings the window back. Cmd+Q / Dock → Quit still quit.
@@ -2494,20 +2565,23 @@ impl eframe::App for App {
             self.lock_prompt = Some(app);
             self.lock_error.clear();
             self.lock_pw.clear();
-            #[cfg(target_os = "macos")]
-            if let Some(mtm) = objc2::MainThreadMarker::new() {
-                let ns_app = objc2_app_kit::NSApplication::sharedApplication(mtm);
-                ns_app.unhide(None);
-                #[allow(deprecated)] // `activate` needs macOS 14; this app supports 11+.
-                ns_app.activateIgnoringOtherApps(true);
-            }
+            bring_to_front(ctx);
             // macOS 14+ ignores activation from a background app, so the prompt would sit behind the
             // frontmost window; keep the window on top until the prompt closes.
             ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
+        while let Some(action) = self.tray_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            match action {
+                tray::Action::Open => bring_to_front(ctx),
+                tray::Action::Quit => {
+                    self.quitting = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
         #[cfg(target_os = "macos")]
-        if ctx.input(|i| i.viewport().close_requested()) {
+        if !self.quitting && ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             if let Some(mtm) = objc2::MainThreadMarker::new() {
                 objc2_app_kit::NSApplication::sharedApplication(mtm).hide(None);
@@ -2633,7 +2707,8 @@ impl eframe::App for App {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     ui.label(RichText::new("deskMonk").size(19.0).strong());
                     ui.label(RichText::new("by pelamx").size(13.0).color(ACCENT));
-                    ui.label(RichText::new(VERSION).size(12.0).color(muted));
+                    ui.label(RichText::new(VERSION).size(12.0).color(muted))
+                        .on_hover_text(t("Kullandığınız sürüm", "The version you have", "La versión que tiene"));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
                         let mut lang = i18n::lang();
@@ -2682,7 +2757,7 @@ impl eframe::App for App {
                         if let Some(v) = self.update_check.as_ref().and_then(|rx| rx.try_recv().ok()) {
                             self.new_version = Some(v);
                         }
-                        if let (Some(found), Some(site)) = (self.new_version.clone(), plan::URL) {
+                        if let (Some(found), site) = (self.new_version.clone(), plan::URL.unwrap_or("https://deskmonk.app")) {
                             ui.add_space(6.0);
                             let (label, hint) = match &found {
                                 update::Found::Installed(v) => (
@@ -2693,13 +2768,22 @@ impl eframe::App for App {
                                     tf!("⬆ Güncelle: {v}", "⬆ Update to {v}", "⬆ Actualizar a {v}"),
                                     t("Yeni sürümü indir", "Download the new version", "Descargar la nueva versión"),
                                 ),
+                                update::Found::Downloading(v) => (
+                                    tf!("⬇ {v} indiriliyor…", "⬇ Getting {v}…", "⬇ Descargando {v}…"),
+                                    t("Yeni sürüm indiriliyor ve kuruluyor; çalışmaya devam edebilirsiniz", "The new version is downloading and installing; you can keep working", "La nueva versión se descarga e instala; puede seguir trabajando"),
+                                ),
                             };
+                            let downloading = matches!(found, update::Found::Downloading(_));
                             let button = egui::Button::new(RichText::new(label).strong().color(Color32::WHITE)).fill(Color32::from_rgb(34, 160, 90)).corner_radius(8);
-                            if ui.add_enabled(!self.busy(), button).on_hover_text(hint).clicked() {
+                            if ui.add_enabled(!self.busy() && !downloading, button).on_hover_text(hint).on_disabled_hover_text(hint).clicked() {
                                 match found {
                                     update::Found::Installed(_) => update::restart(),
                                     update::Found::Available(_) => open_url(&format!("{site}/#download")),
+                                    update::Found::Downloading(_) => {}
                                 }
+                            }
+                            if downloading {
+                                ui.add(egui::Spinner::new().size(14.0));
                             }
                         }
                         // Left out when only a cut-off piece of it would fit.
@@ -2771,7 +2855,8 @@ impl eframe::App for App {
         if self.contact_open {
             self.contact_dialog(&ctx);
         }
-        if self.new_version.is_some() && self.new_version != self.update_seen && !self.pro_open {
+        let ready = matches!(self.new_version, Some(update::Found::Installed(_) | update::Found::Available(_)));
+        if ready && self.new_version != self.update_seen && !self.pro_open {
             self.update_dialog(&ctx);
         }
         if self.vault_prompt {

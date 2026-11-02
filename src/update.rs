@@ -28,6 +28,8 @@ pub enum Found {
     Installed(String),
     /// A newer version exists but this copy can't replace itself (or installing failed): download it by hand.
     Available(String),
+    /// A newer version is being downloaded and installed right now.
+    Downloading(String),
 }
 
 /// This platform's entry name in update.json, e.g. "macos", "windows-x86_64", "linux-aarch64".
@@ -38,9 +40,10 @@ pub fn platform() -> String {
     }
 }
 
-/// Checks the site and, with `install` and when this copy can replace itself, downloads and installs the newer version.
+/// Checks the site and, with `install` and when this copy can replace itself, downloads and installs the newer version;
+/// `downloading` hears the version first, so the window can show it while that runs.
 /// None: up to date, offline, no site configured, or the manifest isn't genuine.
-pub fn check(install_it: bool) -> Option<Found> {
+pub fn check(install_it: bool, downloading: impl FnOnce(&str)) -> Option<Found> {
     let site = crate::plan::URL?;
     let manifest = fetch(&format!("{site}/update.json"), 64 << 10)?;
     let sig = fetch(&format!("{site}/update.json.sig"), 1 << 10)?;
@@ -49,6 +52,7 @@ pub fn check(install_it: bool) -> Option<Found> {
         return Some(Found::Installed(entry.version));
     }
     let Some(target) = target().filter(|_| install_it) else { return Some(Found::Available(entry.version)) };
+    downloading(&entry.version);
     let url = if entry.url.starts_with('/') { format!("{site}{}", entry.url) } else { entry.url.clone() };
     let installed = fetch(&url, 200 << 20)
         .filter(|bytes| hex(&sha256(bytes)) == entry.sha256.to_ascii_lowercase())

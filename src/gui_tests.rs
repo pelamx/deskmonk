@@ -143,6 +143,27 @@ fn the_app_works() {
     assert_eq!(count(&h, Category::Duplicate), 0, "a copy with no others left is no duplicate");
     assert_eq!(h.state().totals(Some(Category::Duplicate), false), (0, 0));
 
+    // Put back (macOS): the Trash gives them back, and the list is as it was. Then they go again.
+    if cfg!(target_os = "macos") {
+        click(&mut h, "↩  Put back");
+        assert!(h.state().status.contains("4 items put back"), "status: {}", h.state().status);
+        for (back, same) in [(&photo_b, &photo_kept), (&photo_c, &photo_kept), (&report_b, &report_kept), (&other_b, &other_kept)] {
+            assert_eq!(fs::read(back).ok(), fs::read(same).ok(), "{} is back as it was", back.display());
+        }
+        assert_eq!(count(&h, Category::Duplicate), 7, "the groups are listed again, kept copies too");
+        assert!(selected_names(h.state(), Category::Duplicate).is_empty(), "nothing put back is ticked");
+        assert!(h.query_all_by_label("↩  Put back").next().is_none(), "nothing more to put back");
+        click(&mut h, "Select all");
+        let label = h.state().totals(None, true).1;
+        click(&mut h, &format!("🗑  Clean {}", human_size(label)));
+        click(&mut h, "Clean");
+        until(&mut h, "cleaning again", |a| a.deleting.is_none());
+        assert!(!photo_b.exists() && !other_b.exists() && photo_kept.exists() && other_kept.exists());
+        assert_eq!(count(&h, Category::Duplicate), 0);
+    }
+    click(&mut h, "Select all");
+    assert!(h.state().status.contains("nothing to select"), "an empty list says so: {}", h.state().status);
+
     // A file that can't be deleted is reported, comes back unticked and leaves the rest alone.
     {
         let app = h.state_mut();
@@ -248,6 +269,34 @@ fn the_app_works() {
     h.state_mut().vault_target = None;
     h.state_mut().vault_done = None;
 
+    assert!(h.query_all_by_label(concat!("v", env!("CARGO_PKG_VERSION"))).next().is_some(), "the version is on screen");
+
+    // An update shows at once while it downloads, then offers the restart, in a dialog and in the top bar.
+    let (tx, rx) = std::sync::mpsc::channel();
+    h.state_mut().update_check = Some(rx);
+    tx.send(update::Found::Downloading("9.9.9".into())).unwrap();
+    h.step();
+    h.step();
+    assert!(h.query_all_by_label("⬇ Getting 9.9.9…").next().is_some(), "the download shows in the top bar");
+    assert!(h.query_all_by_label("Restart now").next().is_none(), "no dialog before it is installed");
+    tx.send(update::Found::Installed("9.9.9".into())).unwrap();
+    h.step();
+    h.step();
+    assert!(h.query_all_by_label("Restart now").next().is_some(), "the dialog offers the restart");
+    assert!(h.query_all_by_label("⟳ Restart for 9.9.9").next().is_some(), "and the top bar too");
+    click(&mut h, "Later");
+    h.step();
+    assert!(h.query_all_by_label("Restart now").next().is_none(), "Later closes it");
+    assert!(h.query_all_by_label("⟳ Restart for 9.9.9").next().is_some(), "the top bar button stays");
+    h.state_mut().new_version = None;
+
+    // The menu bar icon's Open brings the window up; Quit closes it for real (macOS hides it otherwise).
+    let (tx, rx) = std::sync::mpsc::channel();
+    h.state_mut().tray_rx = Some(rx);
+    tx.send(tray::Action::Open).unwrap();
+    h.step();
+    assert!(!h.state().quitting);
+
     // Every page opens and draws, in every language.
     for page in [Page::Monk, Page::Hardware, Page::Map, Page::Lock, Page::Vault, Page::License, Page::Clean] {
         h.state_mut().page = page;
@@ -257,5 +306,8 @@ fn the_app_works() {
             h.step();
         }
     }
+    tx.send(tray::Action::Quit).unwrap();
+    h.step();
+    assert!(h.state().quitting, "Quit from the menu bar quits");
     let _ = fs::remove_dir_all(&home);
 }

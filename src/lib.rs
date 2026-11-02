@@ -13,7 +13,7 @@ pub mod vault;
 use scan::Item;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, channel};
@@ -49,6 +49,61 @@ pub struct Finished {
     pub freed: u64,
     /// Reason of the first failure, for the status line.
     pub first_error: Option<String>,
+    /// Items that went to the Trash, with their place there, for [`Undo`]. macOS only: Finder's Put Back
+    /// does not know items moved there without Finder, and the other systems' trash can restore them itself.
+    pub trashed: Vec<(Item, PathBuf)>,
+}
+
+impl Finished {
+    /// Puts what could not be deleted back into `items` and returns what the cleaning can undo.
+    pub fn into_list(self, items: &mut Vec<Item>) -> Undo {
+        let dropped = return_to_list(items, self.failed);
+        Undo { trashed: self.trashed, dropped }
+    }
+}
+
+/// What the last cleaning sent to the Trash, to put it back where it was.
+#[derive(Default)]
+pub struct Undo {
+    trashed: Vec<(Item, PathBuf)>,
+    /// Copies that left the list because their others went; they come back with them.
+    dropped: Vec<Item>,
+}
+
+impl Undo {
+    pub fn len(&self) -> usize {
+        self.trashed.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.trashed.is_empty()
+    }
+
+    /// Moves the items back from the Trash and into `items` (unticked). Returns how many went back and the
+    /// first reason one could not.
+    pub fn put_back(self, items: &mut Vec<Item>) -> (usize, Option<String>) {
+        let (mut back, mut first_error) = (self.dropped, None);
+        let mut n = 0;
+        for (mut item, place) in self.trashed {
+            let result = if item.path.symlink_metadata().is_ok() {
+                Err(io::Error::new(io::ErrorKind::AlreadyExists, "a file with this name is there again"))
+            } else {
+                item.path.parent().map_or(Ok(()), fs::create_dir_all).and_then(|()| fs::rename(&place, &item.path))
+            };
+            match result {
+                Ok(()) => {
+                    item.selected = false;
+                    back.push(item);
+                    n += 1;
+                }
+                Err(e) => {
+                    first_error.get_or_insert_with(|| format!("{e} ({})", item.path.display()));
+                }
+            }
+        }
+        return_to_list(items, back);
+        (n, first_error)
+    }
 }
 
 /// Whether deleting this item removes it for good. Junk (caches, the trash, temp files) is removed for good:
@@ -69,7 +124,6 @@ impl Deletion {
         let (selected, rest): (Vec<Item>, Vec<Item>) =
             std::mem::take(items).into_iter().partition(|i| i.selected);
         *items = rest;
-        drop_lone_copies(items);
         let done = Arc::new(AtomicUsize::new(0));
         let (tx, rx) = channel();
         let (total, counter) = (selected.len(), done.clone());
@@ -78,16 +132,23 @@ impl Deletion {
                 failed: Vec::new(),
                 freed: 0,
                 first_error: None,
+                trashed: Vec::new(),
             };
             for mut item in selected {
                 let outcome = if is_permanent(&item, permanent) {
-                    remove(&item.path)
+                    remove(&item.path).map(|()| None).map_err(|e| e.to_string())
                 } else {
-                    to_trash(&item.path).map_err(|e| std::io::Error::other(e.to_string()))
+                    to_trash(&item.path)
                 };
                 match outcome {
-                    Ok(()) => result.freed += item.size,
+                    Ok(place) => {
+                        result.freed += item.size;
+                        if let Some(place) = place {
+                            result.trashed.push((item, place));
+                        }
+                    }
                     Err(e) => {
+                        // Reason first: the status line is cut at its end, and long paths hid it.
                         result
                             .first_error
                             .get_or_insert_with(|| format!("{}: {e}", item.name()));
@@ -172,13 +233,36 @@ pub fn keep_selection(old: &[Item], new: &mut [Item]) {
     }
 }
 
+/// Puts items (that could not be deleted, or were put back) into the list where a scan lists them, so a
+/// duplicate sits with its group again, then takes off duplicates left with no other copy and returns those.
+fn return_to_list(items: &mut Vec<Item>, back: Vec<Item>) -> Vec<Item> {
+    items.extend(back);
+    // The scan's order: junk, then duplicates by group with the kept copy first, then the rest biggest first.
+    let rank = |i: &Item| match i.category {
+        scan::Category::Junk => 0,
+        scan::Category::Duplicate => 1,
+        _ => 2,
+    };
+    items.sort_by(|a, b| {
+        rank(a).cmp(&rank(b)).then_with(|| match a.category {
+            scan::Category::Duplicate => (a.group, &a.path).cmp(&(b.group, &b.path)),
+            _ => b.size.cmp(&a.size),
+        })
+    });
+    drop_lone_copies(items)
+}
+
 /// Takes duplicates whose copies are all gone off the list: the one left isn't a duplicate any more.
-fn drop_lone_copies(items: &mut Vec<Item>) {
+fn drop_lone_copies(items: &mut Vec<Item>) -> Vec<Item> {
     let mut members = std::collections::HashMap::new();
     for item in items.iter().filter(|i| i.category == scan::Category::Duplicate) {
         *members.entry(item.group).or_insert(0) += 1;
     }
-    items.retain(|i| i.category != scan::Category::Duplicate || members[&i.group] > 1);
+    let lone;
+    (*items, lone) = std::mem::take(items)
+        .into_iter()
+        .partition(|i| i.category != scan::Category::Duplicate || members[&i.group] > 1);
+    lone
 }
 
 /// Count and size of what a cleaning could remove (of `cat`, or all when None): the first copy of a duplicate
@@ -193,13 +277,16 @@ pub fn removable(items: &[Item], cat: Option<scan::Category>) -> (usize, u64) {
 }
 
 /// Ticks or unticks every item of `cat` (all categories when None). Selecting never ticks the first copy
-/// of a duplicate group, so at least one copy of every file survives a cleaning.
-pub fn set_selection(items: &mut [Item], cat: Option<scan::Category>, on: bool) {
+/// of a duplicate group, so at least one copy of every file survives a cleaning. Returns how many are ticked.
+pub fn set_selection(items: &mut [Item], cat: Option<scan::Category>, on: bool) -> usize {
     let mut kept = std::collections::HashSet::new();
+    let mut ticked = 0;
     for item in items.iter_mut().filter(|i| cat.is_none_or(|c| i.category == c)) {
         let first_copy = item.category == scan::Category::Duplicate && kept.insert(item.group);
         item.selected = on && !first_copy;
+        ticked += item.selected as usize;
     }
+    ticked
 }
 
 /// The app's settings folder. Settings saved under the app's former name (cleanSpace) are moved here once,
@@ -227,18 +314,25 @@ pub fn use_real_home() {
     }
 }
 
-/// Moves a file or folder to the Trash. On macOS through NSFileManager: asking Finder plays its trash sound for
-/// every item, and the sandboxed build may not ask it at all (Finder's "Put Back" then does not know the original place).
-pub fn to_trash(path: &Path) -> Result<(), trash::Error> {
+/// Moves a file or folder to the Trash and returns its place there (macOS only, see [`put_back`]).
+/// On macOS through NSFileManager: asking Finder plays its trash sound for every item and takes about 150 ms
+/// each, and the sandboxed build may not ask it at all. Finder's "Put Back" then does not know the original place.
+pub fn to_trash(path: &Path) -> Result<Option<PathBuf>, String> {
     #[cfg(target_os = "macos")]
     {
-        use trash::macos::{DeleteMethod, TrashContextExtMacos};
-        let mut ctx = trash::TrashContext::default();
-        ctx.set_delete_method(DeleteMethod::NsFileManager);
-        ctx.delete(path)
+        use objc2_foundation::{NSFileManager, NSURL};
+        let url = NSURL::from_file_path(path).ok_or_else(|| format!("not a file path: {}", path.display()))?;
+        // Runs on the deletion thread, which has no pool of its own for Foundation's temporary objects.
+        objc2::rc::autoreleasepool(|_| {
+            let mut place = None;
+            NSFileManager::defaultManager()
+                .trashItemAtURL_resultingItemURL_error(&url, Some(&mut place))
+                .map_err(|e| e.localizedDescription().to_string())?;
+            Ok(place.and_then(|u| u.to_file_path()))
+        })
     }
     #[cfg(not(target_os = "macos"))]
-    trash::delete(path)
+    trash::delete(path).map(|()| None).map_err(|e| e.to_string())
 }
 
 pub fn config_dir() -> Option<std::path::PathBuf> {
@@ -266,6 +360,40 @@ pub fn scan_default(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn failed_copies_rejoin_their_group_and_put_back_restores_the_list() {
+        use super::scan::{Category::*, Item};
+        let dir = std::env::temp_dir().join(format!("deskmonk-undo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        let item = |name: &str, category, group, size| Item { path: dir.join(name), size, category, group, selected: false };
+        let names = |items: &[Item]| items.iter().map(|i| i.path.file_name().unwrap().to_str().unwrap().to_owned()).collect::<Vec<_>>();
+        // Left on the list while a2, a3 and b2 were being cleaned: a3 failed, a2 and b2 went to the "Trash" (bin).
+        let mut items = vec![item("junk", Junk, 0, 5), item("a1", Duplicate, 1, 10), item("b1", Duplicate, 2, 10), item("big", Large, 0, 99)];
+        for name in ["a2", "b2"] {
+            std::fs::write(dir.join("bin").join(name), name).unwrap();
+        }
+        let failed = Item { selected: true, ..item("a3", Duplicate, 1, 10) };
+        let trashed = ["a2", "b2"].map(|n| (Item { selected: true, ..item(n, Duplicate, n.starts_with('b') as usize + 1, 10) }, dir.join("bin").join(n)));
+        let done = super::Finished { failed: vec![failed], freed: 20, first_error: None, trashed: trashed.into() };
+        let undo = done.into_list(&mut items);
+        assert_eq!(names(&items), ["junk", "a1", "a3", "big"], "a3 is back with its group, under one heading; b1 is alone");
+        assert!(items[2].selected, "the failed one stays ticked");
+        assert_eq!(super::set_selection(&mut items, Some(Duplicate), true), 1, "a1 stays, a3 can be ticked again");
+        assert_eq!(super::set_selection(&mut [], None, true), 0, "nothing to tick in an empty list");
+
+        // Something new took b2's place meanwhile: that one stays in the bin, a2 goes home.
+        std::fs::write(dir.join("b2"), "new").unwrap();
+        let (n, err) = undo.put_back(&mut items);
+        assert_eq!(n, 1);
+        assert!(err.is_some_and(|e| e.contains("there again")));
+        assert_eq!(std::fs::read(dir.join("a2")).unwrap(), b"a2");
+        assert!(dir.join("bin/b2").exists() && !dir.join("bin/a2").exists());
+        assert_eq!(names(&items), ["junk", "a1", "a2", "a3", "big"], "a2 back in its place; b1 still has no other copy listed");
+        assert!(!items[2].selected, "what comes back is not ticked");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn counts_leave_out_the_copy_that_stays() {
         use super::scan::{Category, Item};
