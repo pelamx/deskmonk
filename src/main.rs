@@ -2629,6 +2629,8 @@ impl eframe::App for App {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     ui.label(RichText::new("deskMonk").size(19.0).strong());
                     ui.label(RichText::new("by pelamx").size(13.0).color(ACCENT));
+                    // Which version is running, so a bug report or an update question has an answer on screen.
+                    ui.label(RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).size(12.0).color(muted));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
                         let mut lang = i18n::lang();

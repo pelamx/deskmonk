@@ -359,7 +359,8 @@ impl App {
         };
         f.render_widget(
             Paragraph::new(format!(
-                "deskMonk by pelamx  {}{scanning}{update}",
+                "deskMonk v{} by pelamx  {}{scanning}{update}",
+                env!("CARGO_PKG_VERSION"),
                 self.root.display()
             ))
             .bold(),
