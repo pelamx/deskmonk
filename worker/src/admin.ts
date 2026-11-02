@@ -288,8 +288,6 @@ async function dashboard(env: Env, query: string, notice: Notice): Promise<strin
                   SUM(CASE WHEN kind = 'clean' AND ts >= ?2 AND ts < ?1 THEN bytes ELSE 0 END) AS cleaned_yesterday
                 FROM ev WHERE ts >= ?4 GROUP BY os, type`).bind(today, yesterday, week, month),
     db.prepare(`WITH ${EV}, ${first} SELECT ${local("first")} AS d, os, type, COUNT(*) AS n FROM f WHERE first >= ?1 GROUP BY d, os, type`).bind(today - 29 * DAY),
-    db.prepare(`WITH ${MO_T} SELECT e.os, t.type, COUNT(DISTINCT e.install_id) AS total, COUNT(DISTINCT CASE WHEN e.ts >= ?1 THEN e.install_id END) AS week
-                FROM events e JOIN ignored_installs USING (install_id) LEFT JOIN t ON t.install_id = e.install_id GROUP BY e.os, t.type`).bind(week),
     // Plan and store of each installation's latest event (SQLite takes the bare columns from the MAX(ts) row).
     db.prepare(`WITH ${EV}, last AS (SELECT install_id, os, type, plan, channel, MAX(ts) FROM ev WHERE ts >= ?1 AND plan IS NOT NULL GROUP BY install_id)
                 SELECT channel, plan, os, type, COUNT(*) AS n FROM last GROUP BY channel, plan, os, type`).bind(month),
@@ -318,7 +316,7 @@ async function dashboard(env: Env, query: string, notice: Notice): Promise<strin
     db.prepare(`WITH ${EV} SELECT os, type, ${spaceSums} FROM ev GROUP BY os, type`),
     db.prepare(`WITH ${EV} SELECT ${local("ts")} AS d, os, type, COUNT(DISTINCT install_id) AS n FROM ev WHERE ts >= ?1 GROUP BY 1, 2, 3`).bind(today - 29 * DAY),
   ]);
-  const [installs, active, series, mineOs, plans, features, countries, space, versions, clients, brands, daily, subsAll, log, countryDevices, spaceDevices, dailyDevices] =
+  const [installs, active, series, plans, features, countries, space, versions, clients, brands, daily, subsAll, log, countryDevices, spaceDevices, dailyDevices] =
     results.map((r) => (r.results ?? []) as Row[]);
   const users = await usersQuery(db, month, 500);
   const [mobileNow, mobile] = await Promise.all([mobileLiveData(db, t), mobileData(db, t)]);
@@ -348,7 +346,6 @@ async function dashboard(env: Env, query: string, notice: Notice): Promise<strin
 
   // Users and counts
   const real = users.filter((u) => !u.mine).length;
-  const own = users.length - real;
   const seriesMap: Record<string, number> = series.reduce((acc, r) => ({ ...acc, [r.d]: (acc[r.d] ?? 0) + r.n }), {});
   const days14 = [...Array(14)].map((_, i) => date(today + TZ - (13 - i) * DAY));
   const peak = Math.max(1, ...days14.map((d) => seriesMap[d] ?? 0));
@@ -433,8 +430,6 @@ async function dashboard(env: Env, query: string, notice: Notice): Promise<strin
       ${tile({ icon: "clock", tone: "t-orange", title: "Ending in 7 days", value: ending.length, cls: ending.length ? "alert" : "",
         rows: bars3([["Paddle", ending.filter((s) => s.customer_id !== "manual").length, "web"], ["Manual", ending.filter((s) => s.customer_id === "manual").length, "manual"]]),
         foot: `${paddleSubs.filter((s) => s.status === "past_due").length} payment problems (past due)`, footIcon: "card" })}
-      ${tile({ icon: "laptop", tone: "t-blue", cls: "mine", title: `Your own machines <span class="info" title="Installations you marked as yours. They are left out of every other number.">ⓘ</span>`,
-        value: sum(mineOs, "total"), rows: osBars(byPlatform(mineOs, "total")), foot: `${sum(mineOs, "week")} active this week · not counted`, footIcon: "laptop" })}
     </div>
     <p class="label" style="margin-top:20px">New installs, last 14 days</p>
     <div class="bars">${bars}</div>
@@ -557,12 +552,11 @@ async function dashboard(env: Env, query: string, notice: Notice): Promise<strin
   </div>
 
   <details class="card zone" id="users" open>
-    <summary>Users, last 30 days: ${real} real${own ? ` · ${own} yours` : ""}</summary>
+    <summary>Users, last 30 days: ${real}</summary>
     <div class="body">
-      <p class="muted" style="margin-top:0">One row per installation, real users only. Press <b>This is me</b> on your own machines, test runs and
-        store reviewers: they move to the list below and leave every count on this page.</p>
-      ${userTable(users.filter((u) => !u.mine), "Nobody but you this month.")}
-      ${own ? `<details class="mine-list"><summary>Your machines and tests (${own})</summary>${userTable(users.filter((u) => u.mine), "")}</details>` : ""}
+      <p class="muted" style="margin-top:0">Real users only, one row per installation. Press <b>This is me</b> on your own machines, test runs and
+        store reviewers to hide them here and in every count on this page.</p>
+      ${userTable(users.filter((u) => !u.mine), "No real users this month.")}
     </div>
   </details>
 
@@ -1347,7 +1341,6 @@ h1.title { font-size: 22px; margin: 4px 0; }
 .stat .k .info { color: var(--faint); cursor: help; font-weight: 400; }
 .stat .v { font-size: 30px; font-weight: 800; line-height: 1.15; margin-top: 6px; font-variant-numeric: tabular-nums; }
 .stat .d { font-size: 12.5px; color: var(--muted); margin: 4px 0 0; }
-.stat.mine { border-color: rgba(124,140,255,.55); }
 .stat.alert { box-shadow: inset 3px 0 0 var(--orange); }
 .stat.alert .v { color: var(--orange); }
 .up { color: var(--accent); } .down { color: var(--red); } .muted { color: var(--muted); }
@@ -1420,8 +1413,6 @@ tr:last-child td { border-bottom: 0; }
 table tr:hover td { background: rgba(124,140,255,.05); }
 tr.total td { border-top: 1px solid var(--border); font-weight: 600; }
 tr.mine td { opacity: .6; }
-.mine-list { margin-top: 14px; }
-.mine-list > summary { cursor: pointer; color: var(--muted); }
 .foot { font-size: 12.5px; margin: 10px 0 0; }
 details.card { padding: 0; }
 details.card > summary { cursor: pointer; padding: 15px 20px; font-weight: 600; list-style: none; }
