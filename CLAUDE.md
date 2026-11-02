@@ -21,11 +21,12 @@ site, so each one touches **only its own platform's files**:
 
 | Platform | Website download | Release file (signed) |
 |---|---|---|
-| macos | `docs/downloads/deskMonk-<v>-macos.dmg` (notarized, from `packaging/macos.sh`) | `docs/update/macos.json` (+ `docs/update.json` for Macs before 0.5.8) |
+| macos | `docs/downloads/deskMonk-<v>-macos.dmg` (notarized, from `packaging/macos.sh`) | `docs/update/macos.json` |
 | windows-x86_64 | `docs/downloads/deskMonk-<v>-windows-x86_64.zip` | `docs/update/windows-x86_64.json` |
 | linux-x86_64 | `docs/downloads/deskMonk-<v>-linux-x86_64.AppImage` | `docs/update/linux-x86_64.json` |
 
-Nothing else names a version or a download file: the website's buttons and old download links come from the release
+Each release also puts its platform's entry into the shared `docs/update.json`, keeping the others' entries, because
+apps before 0.5.8 (every platform) read only that file. Nothing else names a version or a download file: the website's buttons and old download links come from the release
 files (`worker/src/site.ts`), and installed apps read their own platform's file (`src/update.rs`). Never edit
 `docs/index.html` or `docs/_redirects` for a release, and never edit another platform's files.
 

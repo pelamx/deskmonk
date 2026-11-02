@@ -7,7 +7,7 @@
 # Arguments: platform, version, the website download, then the file installed copies update from (the Mac DMG is both).
 # Without the update file, the website gets the new download but installed copies are not told.
 # It copies the files to docs/downloads (versioned names), removes this platform's previous ones, writes and signs
-# docs/update/<platform>.json, and for macos also docs/update.json (what Macs before 0.5.8 read). Then commit, push,
+# docs/update/<platform>.json, and adds this platform's entry to docs/update.json (what apps before 0.5.8 read). Then commit, push,
 # and deploy (`npx wrangler deploy` in worker/; its build step refuses anything not pushed or not consistent).
 # Needs the release key (~/.deskmonk-release/update-signing.key; the same file on every release machine).
 set -euo pipefail
@@ -49,9 +49,9 @@ PY
 for f in $OLD; do [ -n "$f" ] && [ "docs$f" != "$DL" ] && [ "docs$f" != "$UP" ] && rm -f "docs$f"; done
 sign() { PATH=$HOME/.cargo/bin:$PATH cargo run -q --example sign_update -- sign "$KEY" "$1"; }
 sign "$JSON"
-if [ "$PLATFORM" = macos ]; then
-  # Macs before 0.5.8 only read docs/update.json, which only ever held the macos entry.
-  python3 -c 'import json,sys; e=json.load(open(sys.argv[1]))["macos"]; json.dump({"macos": {k: e[k] for k in ("sha256","url","version")}}, open("docs/update.json","w"), indent=2, sort_keys=True); open("docs/update.json","a").write("\n")' "$JSON"
+if [ -n "$UP" ]; then
+  # Apps before 0.5.8 (every platform) only read docs/update.json: this platform's entry goes there too, the others' stay.
+  python3 -c 'import json,sys; p=sys.argv[2]; e=json.load(open(sys.argv[1]))[p]; m=json.load(open("docs/update.json")); m[p]={k: e[k] for k in ("sha256","url","version")}; open("docs/update.json","w").write(json.dumps(m, indent=2, sort_keys=True)+"\n")' "$JSON" "$PLATFORM"
   sign docs/update.json
 fi
 node worker/predeploy.mjs --check-only
