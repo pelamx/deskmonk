@@ -19,12 +19,13 @@ const DUP_MIN: u64 = 32 * 1024;
 const SKIP_DIRS: &[&str] = &[".git", "node_modules"];
 
 const JUNK_NAMES: &[&str] = &[".DS_Store", "Thumbs.db", "desktop.ini"];
+/// No "log": a browser profile's 000003.log and an ESE database's V01tmp.log are not leftovers, they are
+/// the database. They are open whenever the app runs, and deleting one when it is not would lose the data.
 const JUNK_EXT: &[&str] = &[
     "tmp",
     "temp",
     "bak",
     "old",
-    "log",
     "crdownload",
     "part",
     "dmp",
@@ -90,8 +91,18 @@ pub fn junk_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     let home = dirs::home_dir();
     if cfg!(windows) {
-        // dirs::cache_dir() is all of %LOCALAPPDATA% on Windows (real app data), so only %TEMP%.
+        // dirs::cache_dir() is all of %LOCALAPPDATA% on Windows (real app data), so only %TEMP% —
+        // plus, by name, the caches that live under ~/.cache on Linux and ~/Library/Caches on macOS
+        // and are already cleaned there. Windows has no such folder, so every app picks its own.
         roots.push(std::env::temp_dir());
+        if let Some(local) = dirs::data_local_dir() {
+            for browser in ["Google/Chrome", "Microsoft/Edge", "BraveSoftware/Brave-Browser", "Chromium"] {
+                // One Cache folder per profile (Default, Profile 1, …).
+                let data = local.join(browser).join("User Data");
+                roots.extend(fs::read_dir(data).into_iter().flatten().flatten().map(|e| e.path().join("Cache")).filter(|c| c.is_dir()));
+            }
+            roots.push(local.join("npm-cache")); // where npm puts _cacache on Windows
+        }
     } else {
         roots.extend(dirs::cache_dir()); // ~/.cache, ~/Library/Caches
     }
@@ -276,9 +287,12 @@ pub fn scan(
                 } else {
                     jroot.join(rel.components().next().unwrap())
                 };
+                // A junk file listed on its own is skipped while something still writes it; a cache
+                // folder stays on offer even then, since a cache in use is the normal state of a cache.
+                let live = age < FRESH && key == path;
                 let folder = junk_dirs.entry(key).or_default();
                 folder.0 += size;
-                folder.1 |= age < FRESH;
+                folder.1 |= live;
                 continue;
             }
             let old = age > OLD_DOWNLOAD;
@@ -437,7 +451,8 @@ mod tests {
             File::options().write(true).open(dir.join(f)).unwrap().set_modified(yesterday).unwrap();
         }
         fs::create_dir_all(dir.join("cache/live")).unwrap();
-        fs::write(dir.join("cache/live/now.log"), "being written").unwrap();
+        fs::write(dir.join("cache/live/now.dat"), "a cache its app is using").unwrap();
+        fs::write(dir.join("cache/loose.dat"), "a junk file still being written").unwrap();
         fs::write(dir.join("fresh.tmp"), "being written").unwrap();
 
         let progress = AtomicUsize::new(0);
@@ -461,7 +476,7 @@ mod tests {
                 .iter()
                 .filter(|i| i.category == Category::Junk)
                 .count(),
-            4
+            5
         );
         assert!(partial.iter().all(|i| i.category != Category::Duplicate));
         fs::remove_dir_all(&dir).unwrap();
@@ -472,13 +487,17 @@ mod tests {
         assert!(dups[0].path.ends_with("a.bin") && !dups[0].selected);
         assert!(dups[1].path.ends_with("sub/b.bin") && dups[1].selected);
         let junk = of(Category::Junk);
-        assert_eq!(junk.len(), 4);
-        assert!(junk[0].path.ends_with("trash") && junk[0].size == 110); // the whole trash is one item
-        assert!(junk[1].path.ends_with("cache/app") && junk[1].size == 6); // whole cache folder as one item
-        // Still in use, so not offered: a cache folder written a moment ago, and a fresh .tmp.
-        assert!(junk.iter().all(|i| !i.path.ends_with("cache/live") && !i.path.ends_with("fresh.tmp")));
-        assert_eq!(progress.load(Ordering::Relaxed), 13); // node_modules and .git not walked
-        assert_eq!(items.len(), 6);
+        assert_eq!(junk.len(), 5);
+        let one = |end: &str| junk.iter().find(|i| i.path.ends_with(end));
+        assert!(junk[0].path.ends_with("trash") && junk[0].size == 110); // the whole trash is one item, biggest first
+        assert!(one("cache/app").is_some_and(|i| i.size == 6)); // whole cache folder as one item, deep files counted
+        // A cache folder is offered even though its app just wrote in it: that is what a cache is.
+        assert!(one("cache/live").is_some());
+        // A junk file of its own is not, while something is still writing it — in %TEMP% that is most
+        // of them, and on Windows an open file cannot be deleted by anyone.
+        assert!(one("cache/loose.dat").is_none() && one("fresh.tmp").is_none());
+        assert_eq!(progress.load(Ordering::Relaxed), 14); // node_modules and .git not walked
+        assert_eq!(items.len(), 7); // 5 junk + 2 duplicates
         assert_eq!(human_size(1536), "1.5 KB");
     }
 }
