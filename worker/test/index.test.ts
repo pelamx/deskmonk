@@ -5,7 +5,7 @@ import { handleLicense, inCidr, mayActivate, refundLast, newKey, periodEnd, plan
 import { handleMail, keyMail, weekNumbers, weeklyText } from "../src/mail";
 import { buyPage, js, pickLang } from "../src/pages";
 import { LANGS, USD, money, word } from "../src/i18n";
-import { adsScript } from "../src/site";
+import { adsScript, downloadLabel, platformOf } from "../src/site";
 
 test("validates events the way server/ does", () => {
   const good = `{"install_id":"abc-123","version":"0.1.0","os":"linux","client":"tui","kind":"scan","files":10,"bytes":2048,"junk_bytes":2048}`;
@@ -325,4 +325,15 @@ test("the key mail points at the field in the app, not at the checkout", () => {
   expect(text).toContain("DM-AAAA-BBBB-CCCC");
   expect(text).toContain("Have a license key?");
   expect(text).not.toContain("Get Pro");
+});
+
+test("each platform's download comes from its own release file", () => {
+  expect(platformOf("/downloads/deskMonk-0.5.3-macos.dmg")).toBe("macos");
+  expect(platformOf("/downloads/deskmonk-windows-x86_64.zip")).toBe("windows-x86_64");
+  expect(platformOf("/downloads/deskMonk-0.5.4-linux-x86_64.AppImage")).toBe("linux-x86_64");
+  expect(platformOf("/downloads/update/deskmonk-0.5.3-linux-aarch64.tar.gz")).toBeNull();
+  const mac = { version: "0.5.7", download: "/downloads/deskMonk-0.5.7-macos.dmg", size: 17628988 };
+  expect(downloadLabel(mac, "macos")).toBe("v0.5.7 · DMG · 17 MB");
+  expect(downloadLabel({ version: "0.5.6", download: "/downloads/x.AppImage", size: 11258360 }, "linux-x86_64")).toBe("v0.5.6 · AppImage · x86_64 · 11 MB");
+  // withDownloads uses HTMLRewriter, which only the Workers runtime has: checked on the live page after a deploy.
 });

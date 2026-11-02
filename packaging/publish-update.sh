@@ -1,25 +1,58 @@
 #!/usr/bin/env bash
-# Tells installed copies about a new version: sets one platform's entry in docs/update.json and signs the file.
-#   packaging/publish-update.sh macos          0.5.0 docs/downloads/deskMonk-0.5.0-macos.dmg
-#   packaging/publish-update.sh windows-x86_64 0.5.0 docs/downloads/update/deskmonk-0.5.0-windows-x86_64.tar.gz
-#   packaging/publish-update.sh linux-x86_64   0.5.0 docs/downloads/update/deskmonk-0.5.0-linux-x86_64.tar.gz
-# The file must already be in docs/ (it is served from there); deploy afterwards. Needs the release key
-# (~/.deskmonk-release/update-signing.key, made by `cargo run --example sign_update -- keygen`), see src/update.rs.
+# Publishes ONE platform's release on deskmonk.app, touching only that platform's files, so the Mac, Windows and
+# Linux machines can each release on their own without breaking the others (see CLAUDE.md, "Releasing"):
+#   packaging/publish-update.sh macos          0.5.7 dist/deskMonk-0.5.7-macos.dmg
+#   packaging/publish-update.sh windows-x86_64 0.5.7 dist/deskmonk-windows-x86_64.zip  dist/deskmonk-windows-x86_64.tar.gz
+#   packaging/publish-update.sh linux-x86_64   0.5.7 dist/deskMonk-0.5.7-linux-x86_64.AppImage dist/deskmonk-linux-x86_64.tar.gz
+# Arguments: platform, version, the website download, then the file installed copies update from (the Mac DMG is both).
+# Without the update file, the website gets the new download but installed copies are not told.
+# It copies the files to docs/downloads (versioned names), removes this platform's previous ones, writes and signs
+# docs/update/<platform>.json, and for macos also docs/update.json (what Macs before 0.5.8 read). Then commit, push,
+# and deploy (`npx wrangler deploy` in worker/; its build step refuses anything not pushed or not consistent).
+# Needs the release key (~/.deskmonk-release/update-signing.key; the same file on every release machine).
 set -euo pipefail
 cd "$(dirname "$0")/.."
-[ $# = 3 ] || { sed -n 2,6p "$0"; exit 2; }
-PLATFORM=$1 VERSION=$2 FILE=$3
+[ $# -ge 3 ] && [ $# -le 4 ] || { sed -n 2,13p "$0"; exit 2; }
+PLATFORM=$1 VERSION=$2 DOWNLOAD=$3 UPDATE=${4:-}
+case $PLATFORM in macos | windows-x86_64 | linux-x86_64 | linux-aarch64) ;; *) echo "unknown platform $PLATFORM" >&2; exit 2 ;; esac
+[ "$PLATFORM" = macos ] && UPDATE=$DOWNLOAD
 KEY=${DESKMONK_UPDATE_KEY:-$HOME/.deskmonk-release/update-signing.key}
-case $FILE in docs/*) ;; *) echo "$FILE is not under docs/" >&2; exit 1 ;; esac
-[ -f "$FILE" ] && [ -f "$KEY" ]
-SHA=$(shasum -a 256 "$FILE" | cut -d' ' -f1)
-python3 - "$PLATFORM" "$VERSION" "/${FILE#docs/}" "$SHA" <<'PY'
-import json, sys, os
-platform, version, url, sha = sys.argv[1:]
-path = "docs/update.json"
-m = json.load(open(path)) if os.path.exists(path) else {}
-m[platform] = {"version": version, "url": url, "sha256": sha}
-open(path, "w").write(json.dumps(m, indent=2, sort_keys=True) + "\n")
+[ -f "$KEY" ] || { echo "no release key at $KEY" >&2; exit 1; }
+[ -f "$DOWNLOAD" ] || { echo "no file $DOWNLOAD" >&2; exit 1; }
+if [ "$PLATFORM" = macos ] && [ "$(uname)" = Darwin ]; then
+  # A Mac download must open without warnings: CI's ad-hoc signed DMG never goes on the site.
+  xcrun stapler validate "$DOWNLOAD" >/dev/null || { echo "$DOWNLOAD is not notarized; build it with packaging/macos.sh on the Mac" >&2; exit 1; }
+fi
+
+# Versioned names, so a browser or CDN never serves an old file under a new release's link.
+name() { local base ext; base=$(basename "$1"); ext=${base##*.}; [ "$base" = "${base%.tar.gz}" ] || ext=tar.gz
+  echo "deskMonk-$VERSION-$PLATFORM.$ext"; }
+JSON=docs/update/$PLATFORM.json
+mkdir -p docs/downloads/update docs/update
+OLD=$(python3 -c 'import json,sys; e=json.load(open(sys.argv[1]))[sys.argv[2]]; print(e.get("download","")); print(e.get("url",""))' "$JSON" "$PLATFORM" 2>/dev/null || true)
+DL=docs/downloads/$(name "$DOWNLOAD")
+cp "$DOWNLOAD" "$DL"
+UP=""
+if [ -n "$UPDATE" ]; then
+  if [ "$UPDATE" = "$DOWNLOAD" ]; then UP=$DL; else UP=docs/downloads/update/$(name "$UPDATE"); cp "$UPDATE" "$UP"; fi
+fi
+python3 - "$PLATFORM" "$VERSION" "$DL" "$UP" "$JSON" <<'PY'
+import hashlib, json, os, sys
+platform, version, dl, up, path = sys.argv[1:]
+e = {"version": version, "download": "/" + os.path.relpath(dl, "docs"), "size": os.path.getsize(dl)}
+if up:
+    e["url"] = "/" + os.path.relpath(up, "docs")
+    e["sha256"] = hashlib.sha256(open(up, "rb").read()).hexdigest()
+open(path, "w").write(json.dumps({platform: e}, indent=2, sort_keys=True) + "\n")
 PY
-PATH=$HOME/.cargo/bin:$PATH cargo run -q --example sign_update -- sign "$KEY" docs/update.json
-echo "$PLATFORM → $VERSION ($SHA)"
+# This platform's previous files, when the new ones have other names.
+for f in $OLD; do [ -n "$f" ] && [ "docs$f" != "$DL" ] && [ "docs$f" != "$UP" ] && rm -f "docs$f"; done
+sign() { PATH=$HOME/.cargo/bin:$PATH cargo run -q --example sign_update -- sign "$KEY" "$1"; }
+sign "$JSON"
+if [ "$PLATFORM" = macos ]; then
+  # Macs before 0.5.8 only read docs/update.json, which only ever held the macos entry.
+  python3 -c 'import json,sys; e=json.load(open(sys.argv[1]))["macos"]; json.dump({"macos": {k: e[k] for k in ("sha256","url","version")}}, open("docs/update.json","w"), indent=2, sort_keys=True); open("docs/update.json","a").write("\n")' "$JSON"
+  sign docs/update.json
+fi
+node worker/predeploy.mjs --check-only
+echo "$PLATFORM → $VERSION: $DL${UP:+, update $UP}. Now: git add docs && git commit && git push, then deploy."

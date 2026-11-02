@@ -8,6 +8,51 @@ import { esc } from "./admin";
 
 const PAGES = new Set(["/", "/index.html", "/pricing", "/pricing.html"]);
 
+/** The platforms on the download section. Each one's machine owns docs/update/<platform>.json (signed, see
+ *  packaging/publish-update.sh); nothing here or in the HTML names a version or file, so one platform's release
+ *  never touches another's. */
+export const PLATFORMS = ["macos", "windows-x86_64", "linux-x86_64"] as const;
+export type Platform = (typeof PLATFORMS)[number];
+
+/** One platform's release: `download` is the website file; `url` and `sha256`, when present, the update file the apps fetch. */
+export interface Release {
+  version: string;
+  download: string;
+  size: number;
+  url?: string;
+  sha256?: string;
+}
+
+/** The platform a download path belongs to: "/downloads/deskMonk-0.5.3-macos.dmg" → "macos". */
+export function platformOf(path: string): Platform | null {
+  const p = path.toLowerCase();
+  if (p.includes("macos")) return "macos";
+  if (p.includes("windows")) return "windows-x86_64";
+  if (p.includes("linux") && !p.includes("aarch64") && !p.includes("arm64")) return "linux-x86_64";
+  return null;
+}
+
+/** "v0.5.7 · DMG · 16 MB" */
+export function downloadLabel(r: Release, platform: Platform): string {
+  const ext = r.download.split(".").pop() ?? "";
+  const kind = ext === "AppImage" ? "AppImage" : ext.toUpperCase();
+  const arch = platform === "linux-x86_64" ? " · x86_64" : "";
+  return `v${r.version} · ${kind}${arch} · ${Math.max(1, Math.round(r.size / 1048576))} MB`;
+}
+
+async function releases(assets: Fetcher, origin: string): Promise<Partial<Record<Platform, Release>>> {
+  const out: Partial<Record<Platform, Release>> = {};
+  await Promise.all(
+    PLATFORMS.map(async (p) => {
+      const res = await assets.fetch(`${origin}/update/${p}.json`);
+      if (!res.ok) return;
+      const r = ((await res.json()) as Record<string, Release>)[p];
+      if (r && typeof r.version === "string" && typeof r.download === "string" && r.download.startsWith("/downloads/")) out[p] = r;
+    }),
+  );
+  return out;
+}
+
 // The Google tag and the conversions live in this container. Its two click events come from docs/site.js.
 const GTM_ID = "GTM-KK2TWW72";
 // No consent banner, so no Tag Manager where advertising cookies need prior consent: the EU, EEA, UK, Switzerland and Türkiye (where the controller is).
@@ -30,12 +75,20 @@ export function adsScript(req: Request): Response {
 
 export async function handleSite(req: Request, assets: Fetcher, path: string): Promise<Response | null> {
   if (path === "/ads.js") return adsScript(req);
+  // /download/macos, and any download file that is no longer there (an old version's link): the platform's current file.
+  // The worker only sees /downloads/ paths that have no file, as the static assets answer the rest first.
+  if (path.startsWith("/download/") || path.startsWith("/downloads/")) {
+    const platform = path.startsWith("/download/") ? (PLATFORMS as readonly string[]).includes(path.slice(10)) ? (path.slice(10) as Platform) : null : platformOf(path);
+    const r = platform && (await releases(assets, new URL(req.url).origin))[platform];
+    return r ? Response.redirect(new URL(r.download, req.url).toString(), 302) : new Response("not found", { status: 404 });
+  }
   if (!PAGES.has(path) || (req.method !== "GET" && req.method !== "HEAD")) return null;
   // Without the browser's If-None-Match: the same URL now has a body per language, so a 304 could show the wrong one.
   const res = await assets.fetch(new Request(req.url, { method: req.method }));
   if (!res.ok || !(res.headers.get("Content-Type") ?? "").includes("text/html")) return res;
   const lang = pickLang(req);
-  const out = translate(res, lang, new URL(req.url));
+  const url = new URL(req.url);
+  const out = withDownloads(translate(res, lang, url), await releases(assets, url.origin));
   const headers = new Headers(out.headers);
   headers.delete("ETag");
   headers.set("Cache-Control", "no-cache");
@@ -43,6 +96,22 @@ export async function handleSite(req: Request, assets: Fetcher, path: string): P
   headers.set("Content-Language", lang);
   if (new URL(req.url).searchParams.has("lang")) headers.append("Set-Cookie", `lang=${lang}; Path=/; Max-Age=31536000; SameSite=Lax; Secure`);
   return new Response(out.body, { status: out.status, headers });
+}
+
+/** Points each a[data-download="<platform>"] at that platform's current file and writes its version and size in its <small>. */
+export function withDownloads(res: Response, rel: Partial<Record<Platform, Release>>): Response {
+  let current: Platform | null = null;
+  return new HTMLRewriter()
+    .on("a[data-download]", {
+      element: (el) => {
+        const p = el.getAttribute("data-download") as Platform;
+        const r = rel[p];
+        current = r ? p : null;
+        if (r) el.setAttribute("href", r.download);
+      },
+    })
+    .on("a[data-download] small", { element: (el) => { if (current) el.setInnerContent(downloadLabel(rel[current]!, current)); } })
+    .transform(res);
 }
 
 export function translate(res: Response, lang: Lang, url: URL): Response {

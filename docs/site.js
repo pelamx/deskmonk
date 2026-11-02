@@ -36,7 +36,7 @@ if (price) {
 document.addEventListener("click", (e) => {
   const a = e.target.closest("a");
   if (!a) return;
-  const download = a.pathname.startsWith("/downloads/") || a.hostname === "github.com";
+  const download = a.pathname.startsWith("/download") || a.hostname === "github.com";
   if (download || a.pathname === "/buy") (window.dataLayer = window.dataLayer || []).push({ event: download ? "download_click" : "get_pro_click" });
 });
 

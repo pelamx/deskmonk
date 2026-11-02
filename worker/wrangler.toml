@@ -7,6 +7,11 @@ compatibility_date = "2026-09-01"
 workers_dev = false
 routes = [{ pattern = "deskmonk.app", custom_domain = true }]
 
+# Every deploy first checks that it is exactly origin/master and that every platform's download and update file is
+# there and signed (predeploy.mjs), so one machine's deploy can't take another platform's release off the site.
+[build]
+command = "node predeploy.mjs"
+
 [assets]
 directory = "../docs"
 binding = "ASSETS"

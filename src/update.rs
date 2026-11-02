@@ -1,7 +1,7 @@
 //! Self-update for the website builds (Mac DMG, Windows and Linux archives); the Mac App Store updates its build itself.
 //!
-//! `{site}/update.json` names, per platform, the newest version, its file and that file's SHA-256. The manifest is
-//! signed with deskMonk's release key (Ed25519, `update.json.sig`); the app holds only the public half below, so a
+//! `{site}/update/<platform>.json` names that platform's newest version, its file and that file's SHA-256 (older Macs
+//! read `{site}/update.json`). Each is signed with deskMonk's release key (Ed25519, `<file>.sig`); the app holds only the public half below, so a
 //! manifest anyone else wrote is refused, and so is any download whose hash differs. A version is only ever replaced
 //! by a newer one. On macOS the new app must also carry Apple's Developer ID signature of deskMonk's team.
 //!
@@ -45,8 +45,9 @@ pub fn platform() -> String {
 /// None: up to date, offline, no site configured, or the manifest isn't genuine.
 pub fn check(install_it: bool, downloading: impl FnOnce(&str)) -> Option<Found> {
     let site = crate::plan::URL?;
-    let manifest = fetch(&format!("{site}/update.json"), 64 << 10)?;
-    let sig = fetch(&format!("{site}/update.json.sig"), 1 << 10)?;
+    // Each platform's own file (its release machine writes only that one); update.json is the Macs' older one.
+    let signed = |path: &str| Some((fetch(&format!("{site}{path}"), 64 << 10)?, fetch(&format!("{site}{path}.sig"), 1 << 10)?));
+    let (manifest, sig) = signed(&format!("/update/{}.json", platform())).or_else(|| signed("/update.json"))?;
     let entry = entry_for(&manifest, &String::from_utf8_lossy(&sig), PUBLIC_KEY, &platform(), env!("CARGO_PKG_VERSION"))?;
     if installed_marker().is_some_and(|v| v == entry.version) {
         return Some(Found::Installed(entry.version));

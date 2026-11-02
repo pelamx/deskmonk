@@ -30,6 +30,19 @@ jobs:
       - run: env -u DESKMONK_TELEMETRY_URL -u DESKMONK_LICENSE_URL cargo test --workspace
         shell: bash
 
+  # The website: its tests, and every platform's release file signed and pointing at files that exist (what each
+  # deploy also checks), so a push that would break another platform's download or update fails here first.
+  site:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node worker/predeploy.mjs --check-only
+      - run: npm ci && npm test
+        working-directory: worker
+
   # One app for Apple Silicon and Intel Macs.
   macos:
     runs-on: macos-latest
