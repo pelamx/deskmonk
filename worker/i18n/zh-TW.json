@@ -195,5 +195,9 @@
  "pay.home": "deskmonk.app",
  "pay.terms": "條款",
  "pay.privacy": "隱私權",
- "pay.refunds": "退款"
+ "pay.refunds": "退款",
+ "consent.text": "我們希望使用 Google Ads Cookie 來衡量廣告成效，並在其他網站上向訪客顯示 deskMonk 廣告。是否允許？",
+ "consent.accept": "允許",
+ "consent.decline": "拒絕",
+ "consent.more": "隱私權"
 }

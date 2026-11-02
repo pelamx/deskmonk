@@ -195,5 +195,9 @@
  "pay.home": "deskmonk.app",
  "pay.terms": "शर्तें",
  "pay.privacy": "प्राइवेसी",
- "pay.refunds": "रिफ़ंड"
+ "pay.refunds": "रिफ़ंड",
+ "consent.text": "हम अपने विज्ञापनों को मापने और दूसरी साइटों पर विज़िटर्स को deskMonk के विज्ञापन दिखाने के लिए Google Ads कुकीज़ का उपयोग करना चाहते हैं। अनुमति दें?",
+ "consent.accept": "अनुमति दें",
+ "consent.decline": "अस्वीकार करें",
+ "consent.more": "गोपनीयता"
 }

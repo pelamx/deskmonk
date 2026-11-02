@@ -195,5 +195,9 @@
  "pay.home": "deskmonk.app",
  "pay.terms": "이용약관",
  "pay.privacy": "개인정보",
- "pay.refunds": "환불"
+ "pay.refunds": "환불",
+ "consent.text": "광고 효과를 측정하고 다른 사이트에서 방문자에게 deskMonk 광고를 보여 주기 위해 Google Ads 쿠키를 사용하려고 합니다. 허용하시겠습니까?",
+ "consent.accept": "허용",
+ "consent.decline": "거부",
+ "consent.more": "개인정보"
 }

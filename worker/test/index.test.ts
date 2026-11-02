@@ -160,11 +160,22 @@ test("buyer pages: language, unconfigured checkout, escaping", async () => {
   expect(js("</script>")).toBe('"\\u003c/script>"');
 });
 
-test("Google Tag Manager stays out where it needs consent, and when the country is unknown", async () => {
+test("Google Tag Manager waits for Allow where it needs consent, and when the country is unknown", async () => {
   const ads = (country: string | null) =>
     adsScript(Object.assign(new Request("https://deskmonk.app/ads.js"), country ? { cf: { country } } : {})).text();
-  expect(await ads("US")).toContain("gtm.js?id=GTM-KK2TWW72");
-  for (const c of ["DE", "NO", "GB", "CH", "TR", null]) expect(await ads(c)).toBe("");
+  const us = await ads("US");
+  expect(us).toContain("gtm.js?id=GTM-KK2TWW72");
+  expect(us).not.toContain("consent");
+  for (const c of ["DE", "NO", "GB", "CH", "TR", null]) {
+    const js = await ads(c);
+    expect(js).toContain('gtag("consent", "default"');
+    // The tag is only inside load(), which runs after Allow or a kept "ads=1".
+    expect(js.indexOf("gtm.js?id=")).toBeGreaterThan(js.indexOf("function load()"));
+    expect(js.indexOf("gtm.js?id=")).toBeLessThan(js.indexOf("function keep("));
+    expect(() => new Function(js)).not.toThrow();
+  }
+  expect(await ads("TR")).toContain('"İzin ver"');
+  expect(await ads("DE")).toContain('"Ablehnen"');
 });
 
 test("language: chosen, then country, then browser; prices filled in", () => {

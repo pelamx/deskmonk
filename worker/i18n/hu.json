@@ -195,5 +195,9 @@
  "pay.home": "deskmonk.app",
  "pay.terms": "Feltételek",
  "pay.privacy": "Adatvédelem",
- "pay.refunds": "Visszatérítés"
+ "pay.refunds": "Visszatérítés",
+ "consent.text": "Google Ads sütiket szeretnénk használni hirdetéseink mérésére, és hogy más oldalakon deskMonk-hirdetéseket mutassunk a látogatóknak. Engedélyezed?",
+ "consent.accept": "Engedélyezem",
+ "consent.decline": "Elutasítom",
+ "consent.more": "Adatvédelem"
 }

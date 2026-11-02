@@ -195,5 +195,9 @@
  "pay.home": "deskmonk.app",
  "pay.terms": "الشروط",
  "pay.privacy": "الخصوصية",
- "pay.refunds": "الاسترداد"
+ "pay.refunds": "الاسترداد",
+ "consent.text": "نود استخدام ملفات تعريف الارتباط من Google Ads لقياس إعلاناتنا وعرض إعلانات deskMonk للزوار على مواقع أخرى. هل تسمح بها؟",
+ "consent.accept": "سماح",
+ "consent.decline": "رفض",
+ "consent.more": "الخصوصية"
 }

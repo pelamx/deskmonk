@@ -195,5 +195,9 @@
  "pay.home": "deskmonk.app",
  "pay.terms": "Điều khoản",
  "pay.privacy": "Quyền riêng tư",
- "pay.refunds": "Hoàn tiền"
+ "pay.refunds": "Hoàn tiền",
+ "consent.text": "Chúng tôi muốn dùng cookie của Google Ads để đo lường quảng cáo và hiển thị quảng cáo deskMonk cho khách truy cập trên các trang khác. Cho phép?",
+ "consent.accept": "Cho phép",
+ "consent.decline": "Từ chối",
+ "consent.more": "Quyền riêng tư"
 }

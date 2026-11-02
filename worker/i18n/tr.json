@@ -195,5 +195,9 @@
  "pay.home": "deskmonk.app",
  "pay.terms": "Koşullar",
  "pay.privacy": "Gizlilik",
- "pay.refunds": "İade"
+ "pay.refunds": "İade",
+ "consent.text": "Reklamlarımızın etkisini ölçmek ve deskMonk reklamlarını ziyaretçilere başka sitelerde göstermek için Google Ads çerezlerini kullanmak istiyoruz. İzin veriyor musunuz?",
+ "consent.accept": "İzin ver",
+ "consent.decline": "Reddet",
+ "consent.more": "Gizlilik"
 }

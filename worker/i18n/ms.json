@@ -195,5 +195,9 @@
  "pay.home": "deskmonk.app",
  "pay.terms": "Terma",
  "pay.privacy": "Privasi",
- "pay.refunds": "Bayaran balik"
+ "pay.refunds": "Bayaran balik",
+ "consent.text": "Kami ingin menggunakan kuki Google Ads untuk mengukur iklan kami dan memaparkan iklan deskMonk kepada pelawat di laman lain. Benarkan?",
+ "consent.accept": "Benarkan",
+ "consent.decline": "Tolak",
+ "consent.more": "Privasi"
 }

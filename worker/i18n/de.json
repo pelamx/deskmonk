@@ -195,5 +195,9 @@
  "pay.home": "deskmonk.app",
  "pay.terms": "AGB",
  "pay.privacy": "Datenschutz",
- "pay.refunds": "Erstattungen"
+ "pay.refunds": "Erstattungen",
+ "consent.text": "Wir möchten Google-Ads-Cookies verwenden, um unsere Anzeigen zu messen und Besuchern auf anderen Websites deskMonk-Anzeigen zu zeigen. Erlauben?",
+ "consent.accept": "Erlauben",
+ "consent.decline": "Ablehnen",
+ "consent.more": "Datenschutz"
 }

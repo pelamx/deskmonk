@@ -195,5 +195,9 @@
  "pay.home": "deskmonk.app",
  "pay.terms": "תנאים",
  "pay.privacy": "פרטיות",
- "pay.refunds": "החזרים"
+ "pay.refunds": "החזרים",
+ "consent.text": "נשמח להשתמש בקובצי Cookie של Google Ads כדי למדוד את המודעות שלנו ולהציג מודעות של deskMonk למבקרים באתרים אחרים. לאשר?",
+ "consent.accept": "אישור",
+ "consent.decline": "דחייה",
+ "consent.more": "פרטיות"
 }

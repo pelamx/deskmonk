@@ -5,6 +5,7 @@
 
 import { LANG_NAMES, LANGS, RTL, USD, countryOf, money, pickLang, word, type Lang } from "./i18n";
 import { esc } from "./admin";
+import { js } from "./pages";
 
 const PAGES = new Set(["/", "/index.html", "/pricing", "/pricing.html"]);
 
@@ -58,19 +59,62 @@ const GTM_ID = "GTM-KK2TWW72";
 // No consent banner, so no Tag Manager where advertising cookies need prior consent: the EU, EEA, UK, Switzerland and Türkiye (where the controller is).
 const NO_ADS = new Set("AT BE BG HR CY CZ DK EE FI FR DE GR HU IE IT LV LT LU MT NL PL PT RO SK SI ES SE IS LI NO GB CH TR".split(" "));
 
-/** Google Tag Manager for /ads.js. Empty where it may not run, or when the country is unknown; the browser's Global Privacy Control also stops it. */
-export function adsScript(req: Request): Response {
-  const country = countryOf(req);
-  const body = !country || NO_ADS.has(country) ? "" : `if (!navigator.globalPrivacyControl) {
-  window.dataLayer = window.dataLayer || [];
+const LOAD_GTM = `window.dataLayer = window.dataLayer || [];
   dataLayer.push({ "gtm.start": Date.now(), event: "gtm.js" });
   var s = document.createElement("script");
   s.async = true;
   s.src = "https://www.googletagmanager.com/gtm.js?id=${GTM_ID}";
-  document.head.appendChild(s);
+  document.head.appendChild(s);`;
+
+/** Google Tag Manager for /ads.js; the browser's Global Privacy Control stops it everywhere. Where advertising cookies need
+ *  prior consent (and when the country is unknown) it loads only after Allow on a banner; the choice is the "ads" cookie,
+ *  and any [data-cookies] link (the privacy page) clears it to ask again. */
+export function adsScript(req: Request): Response {
+  const country = countryOf(req);
+  const lang = pickLang(req);
+  const w = (k: string) => js(word(lang, `consent.${k}`));
+  const body = country && !NO_ADS.has(country) ? `if (!navigator.globalPrivacyControl) {
+  ${LOAD_GTM}
 }
+` : `(function () {
+  function load() {
+    window.dataLayer = window.dataLayer || [];
+    function gtag() { dataLayer.push(arguments); }
+    gtag("consent", "default", { ad_storage: "granted", ad_user_data: "granted", ad_personalization: "granted", analytics_storage: "granted" });
+    ${LOAD_GTM}
+  }
+  function keep(v) { document.cookie = "ads=" + v + "; Path=/; Max-Age=" + (v ? 15552000 : 0) + "; SameSite=Lax; Secure"; }
+  document.addEventListener("click", function (e) {
+    if (e.target.closest && e.target.closest("[data-cookies]")) { e.preventDefault(); keep(""); location.reload(); }
+  });
+  if (navigator.globalPrivacyControl) return;
+  var c = /(?:^|; )ads=([01])(?:;|$)/.exec(document.cookie);
+  if (c) { if (c[1] === "1") load(); return; }
+  function ask() {
+    var box = document.createElement("div");
+    box.className = "consent";
+    box.setAttribute("role", "dialog");
+    box.setAttribute("aria-label", "Cookies");
+    var p = document.createElement("p");
+    p.textContent = ${w("text")} + " ";
+    var more = document.createElement("a");
+    more.href = "/privacy#this-website";
+    more.textContent = ${w("more")};
+    p.appendChild(more);
+    box.appendChild(p);
+    [["0", ${w("decline")}], ["1", ${w("accept")}]].forEach(function (b) {
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = b[1];
+      btn.onclick = function () { keep(b[0]); box.remove(); if (b[0] === "1") load(); };
+      box.appendChild(btn);
+    });
+    document.body.appendChild(box);
+  }
+  if (document.body) ask(); else document.addEventListener("DOMContentLoaded", ask);
+})();
 `;
-  return new Response(body, { headers: { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "private, no-cache" } });
+  return new Response(body, { headers: { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "private, no-cache", Vary: "Cookie, Accept-Language" } });
 }
 
 export async function handleSite(req: Request, assets: Fetcher, path: string): Promise<Response | null> {

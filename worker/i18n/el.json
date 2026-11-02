@@ -195,5 +195,9 @@
  "pay.home": "deskmonk.app",
  "pay.terms": "Όροι",
  "pay.privacy": "Απόρρητο",
- "pay.refunds": "Επιστροφές"
+ "pay.refunds": "Επιστροφές",
+ "consent.text": "Θα θέλαμε να χρησιμοποιούμε cookies του Google Ads για να μετράμε τις διαφημίσεις μας και να δείχνουμε διαφημίσεις του deskMonk στους επισκέπτες σε άλλους ιστότοπους. Τα επιτρέπετε;",
+ "consent.accept": "Αποδοχή",
+ "consent.decline": "Απόρριψη",
+ "consent.more": "Απόρρητο"
 }

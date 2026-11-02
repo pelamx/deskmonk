@@ -195,5 +195,9 @@
  "pay.home": "deskmonk.app",
  "pay.terms": "Умови",
  "pay.privacy": "Конфіденційність",
- "pay.refunds": "Повернення коштів"
+ "pay.refunds": "Повернення коштів",
+ "consent.text": "Ми хотіли б використовувати файли cookie Google Ads, щоб оцінювати нашу рекламу та показувати рекламу deskMonk відвідувачам на інших сайтах. Дозволити?",
+ "consent.accept": "Дозволити",
+ "consent.decline": "Відхилити",
+ "consent.more": "Конфіденційність"
 }

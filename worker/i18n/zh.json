@@ -195,5 +195,9 @@
  "pay.home": "deskmonk.app",
  "pay.terms": "条款",
  "pay.privacy": "隐私",
- "pay.refunds": "退款"
+ "pay.refunds": "退款",
+ "consent.text": "我们希望使用 Google Ads Cookie 来衡量广告效果，并在其他网站上向访客展示 deskMonk 广告。是否允许？",
+ "consent.accept": "允许",
+ "consent.decline": "拒绝",
+ "consent.more": "隐私"
 }

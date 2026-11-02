@@ -195,5 +195,9 @@
  "pay.home": "deskmonk.app",
  "pay.terms": "Termeni",
  "pay.privacy": "Confidențialitate",
- "pay.refunds": "Rambursări"
+ "pay.refunds": "Rambursări",
+ "consent.text": "Am dori să folosim cookie-uri Google Ads pentru a măsura reclamele noastre și a arăta reclame deskMonk vizitatorilor pe alte site-uri. Le permiți?",
+ "consent.accept": "Permite",
+ "consent.decline": "Refuză",
+ "consent.more": "Confidențialitate"
 }

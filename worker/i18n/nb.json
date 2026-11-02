@@ -195,5 +195,9 @@
  "pay.home": "deskmonk.app",
  "pay.terms": "Vilkår",
  "pay.privacy": "Personvern",
- "pay.refunds": "Refusjon"
+ "pay.refunds": "Refusjon",
+ "consent.text": "Vi vil gjerne bruke informasjonskapsler fra Google Ads til å måle annonsene våre og vise deskMonk-annonser til besøkende på andre nettsteder. Tillate dem?",
+ "consent.accept": "Tillat",
+ "consent.decline": "Avslå",
+ "consent.more": "Personvern"
 }

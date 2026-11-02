@@ -163,3 +163,14 @@ h2.big { font-size: 2.1rem; margin: .2em 0 .4em; line-height: 1.15; }
 .cta .mascot { width: 170px; margin: -110px auto 8px; }
 @media (max-width: 900px) { .hero-art { margin-block-end: 30px; margin-inline-start: 16%; } .hero-art .mascot { inset-inline-start: -20%; bottom: -12%; width: 30%; } }
 @media (max-width: 600px) { @media (prefers-reduced-motion: reduce) { .hero-art .mascot { animation: none; } }
+
+/* Cookie banner, shown by /ads.js where advertising cookies need consent (worker/src/site.ts). */
+.consent { position: fixed; z-index: 20; left: 16px; right: 16px; bottom: 16px; max-width: 560px; margin: 0 auto; padding: 16px 18px;
+           display: flex; flex-wrap: wrap; gap: 10px; align-items: center; background: var(--card); color: var(--text);
+           border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 16px 40px rgba(0,0,0,.45); font-size: 14px; }
+.consent p { margin: 0; flex: 1 1 100%; }
+.consent a { color: var(--brand-2); }
+.consent button { flex: 1; font: inherit; font-weight: 600; padding: 10px 16px; border-radius: 999px; cursor: pointer;
+                  color: var(--text); background: transparent; border: 1px solid var(--line); }
+.consent button:last-child { color: #fff; border-color: transparent; background: linear-gradient(135deg, var(--brand), var(--brand-2)); }
+.consent button:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }

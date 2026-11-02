@@ -195,5 +195,9 @@
  "pay.home": "deskmonk.app",
  "pay.terms": "شرایط",
  "pay.privacy": "حریم خصوصی",
- "pay.refunds": "بازپرداخت"
+ "pay.refunds": "بازپرداخت",
+ "consent.text": "می‌خواهیم از کوکی‌های Google Ads برای سنجش تبلیغات‌مان و نمایش تبلیغات deskMonk به بازدیدکنندگان در سایت‌های دیگر استفاده کنیم. اجازه می‌دهید؟",
+ "consent.accept": "اجازه",
+ "consent.decline": "رد",
+ "consent.more": "حریم خصوصی"
 }

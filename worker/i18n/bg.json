@@ -195,5 +195,9 @@
  "pay.home": "deskmonk.app",
  "pay.terms": "Условия",
  "pay.privacy": "Поверителност",
- "pay.refunds": "Възстановяване"
+ "pay.refunds": "Възстановяване",
+ "consent.text": "Бихме искали да използваме бисквитки на Google Ads, за да измерваме рекламите си и да показваме реклами на deskMonk на посетителите в други сайтове. Разрешавате ли?",
+ "consent.accept": "Разреши",
+ "consent.decline": "Откажи",
+ "consent.more": "Поверителност"
 }

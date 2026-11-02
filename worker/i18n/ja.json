@@ -195,5 +195,9 @@
  "pay.home": "deskmonk.app",
  "pay.terms": "利用規約",
  "pay.privacy": "プライバシー",
- "pay.refunds": "返金"
+ "pay.refunds": "返金",
+ "consent.text": "広告の効果測定と、他のサイトで deskMonk の広告を表示するために、Google 広告の Cookie を使用したいと考えています。許可しますか？",
+ "consent.accept": "許可",
+ "consent.decline": "拒否",
+ "consent.more": "プライバシー"
 }
