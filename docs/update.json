@@ -8,5 +8,10 @@
     "sha256": "a39af97882ebbc2d58f5e774ed1927badb767cb434e70627ecfe59a92eb01041",
     "url": "/downloads/deskMonk-0.5.8-macos.dmg",
     "version": "0.5.8"
+  },
+  "windows-x86_64": {
+    "sha256": "899f2debe4db1ba0775915c67bb9687bc1253953bf891027da7c6bc1836cd48c",
+    "url": "/downloads/update/deskMonk-0.5.9-windows-x86_64.tar.gz",
+    "version": "0.5.9"
   }
 }
