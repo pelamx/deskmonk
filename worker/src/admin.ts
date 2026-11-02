@@ -559,13 +559,10 @@ async function dashboard(env: Env, query: string, notice: Notice): Promise<strin
   <details class="card zone" id="users" open>
     <summary>Users, last 30 days: ${real} real${own ? ` · ${own} yours` : ""}</summary>
     <div class="body">
-      <p class="muted" style="margin-top:0">One row per installation. Press <b>This is me</b> on your own machines: they stay listed, tagged
-        <span class="badge you">you</span>, but leave every count on this page.</p>
-      <div class="scroll"><table>
-        <tr><th>Install</th><th>Where</th><th>System</th><th>Plan</th><th>Version</th><th>First seen</th><th>Last seen</th>
-          <th class="num">Opens</th><th class="num">Scans</th><th class="num">Cleans</th><th class="num">Freed</th><th class="num">Vault</th><th class="num">Focus</th><th></th></tr>
-        ${users.map((u) => userRow(u, "/admin#users")).join("") || `<tr><td colspan="14" class="muted">Nobody this month.</td></tr>`}
-      </table></div>
+      <p class="muted" style="margin-top:0">One row per installation, real users only. Press <b>This is me</b> on your own machines, test runs and
+        store reviewers: they move to the list below and leave every count on this page.</p>
+      ${userTable(users.filter((u) => !u.mine), "Nobody but you this month.")}
+      ${own ? `<details class="mine-list"><summary>Your machines and tests (${own})</summary>${userTable(users.filter((u) => u.mine), "")}</details>` : ""}
     </div>
   </details>
 
@@ -981,6 +978,15 @@ function months(subs: Row[], t: number): string {
     return `<tr><td>${ym}</td><td class="num">${m}</td><td class="num">${y}</td><td class="num">${canceled}</td><td class="num">${usd(m * PRICE.monthly + y * PRICE.yearly)}</td></tr>`;
   });
   return rows.join("");
+}
+
+/** The installations table: one row each, `empty` when there are none. */
+function userTable(rows: Row[], empty: string): string {
+  return `<div class="scroll"><table>
+    <tr><th>Install</th><th>Where</th><th>System</th><th>Plan</th><th>Version</th><th>First seen</th><th>Last seen</th>
+      <th class="num">Opens</th><th class="num">Scans</th><th class="num">Cleans</th><th class="num">Freed</th><th class="num">Vault</th><th class="num">Focus</th><th></th></tr>
+    ${rows.map((u) => userRow(u, "/admin#users")).join("") || `<tr><td colspan="14" class="muted">${empty}</td></tr>`}
+  </table></div>`;
 }
 
 function userRow(u: Row, back: string): string {
@@ -1414,6 +1420,8 @@ tr:last-child td { border-bottom: 0; }
 table tr:hover td { background: rgba(124,140,255,.05); }
 tr.total td { border-top: 1px solid var(--border); font-weight: 600; }
 tr.mine td { opacity: .6; }
+.mine-list { margin-top: 14px; }
+.mine-list > summary { cursor: pointer; color: var(--muted); }
 .foot { font-size: 12.5px; margin: 10px 0 0; }
 details.card { padding: 0; }
 details.card > summary { cursor: pointer; padding: 15px 20px; font-weight: 600; list-style: none; }
