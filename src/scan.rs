@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 use walkdir::WalkDir;
@@ -71,7 +71,15 @@ impl Item {
     }
 }
 
-fn is_junk(path: &Path) -> bool {
+/// Junk by name (logs, .old, .tmp, …), but never in app data: hidden folders (~/.config, …) and the OS ones in
+/// `app_data` hold live databases (LevelDB logs) that apps need and recreate at once, so Clean seems to do nothing.
+fn is_junk(path: &Path, app_data: &[PathBuf]) -> bool {
+    let hidden = path.parent().is_some_and(|p| {
+        p.components().any(|c| matches!(c, Component::Normal(n) if n.to_string_lossy().starts_with('.')))
+    });
+    if hidden || app_data.iter().any(|a| path.starts_with(a)) {
+        return false;
+    }
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     let ext = path
         .extension()
@@ -110,6 +118,8 @@ pub struct Places {
     pub user: Vec<PathBuf>,
     /// Listed as one item instead of per entry. See [`trash_dir`].
     pub trash: Option<PathBuf>,
+    /// Where apps keep their data besides hidden folders (~/Library, %USERPROFILE%\AppData). See [`is_junk`].
+    pub app_data: Vec<PathBuf>,
 }
 
 impl Places {
@@ -127,6 +137,13 @@ impl Places {
             junk: junk_roots(),
             user: user.into_iter().flatten().collect(),
             trash: trash_dir(),
+            app_data: dirs::home_dir()
+                .into_iter()
+                .filter_map(|h| {
+                    let dir = if cfg!(windows) { "AppData" } else if cfg!(target_os = "macos") { "Library" } else { return None };
+                    Some(h.join(dir))
+                })
+                .collect(),
         }
     }
 }
@@ -268,7 +285,7 @@ pub fn scan(
             }
             let modified = meta.modified().unwrap_or(now);
             let old = now.duration_since(modified).unwrap_or_default() > OLD_DOWNLOAD;
-            let class = if is_junk(&path) {
+            let class = if is_junk(&path, &places.app_data) {
                 Some((Category::Junk, true))
             } else if old
                 && places
@@ -435,6 +452,7 @@ mod tests {
         fs::write(dir.join("repo/src/f.bin"), &big).unwrap(); // inside a git repo: not a candidate
         fs::write(dir.join("x.tmp"), "junk").unwrap();
         fs::write(dir.join(".DS_Store"), "j").unwrap();
+        fs::write(dir.join(".config/000003.log"), "db").unwrap(); // an app's live database log: not junk
         fs::write(dir.join("cache/app/1"), "aaaa").unwrap();
         fs::write(dir.join("cache/app/deep/2"), "bb").unwrap();
         fs::write(dir.join("trash/files/old.txt"), vec![1u8; 100]).unwrap();
@@ -446,6 +464,7 @@ mod tests {
             downloads: None,
             junk: vec![dir.join("cache"), dir.join("trash")],
             user: vec![dir.join("sub")],
+            app_data: vec![],
         };
         let mut partial = Vec::new();
         // Passing a root twice and a root inside another must not create self-duplicates.
@@ -474,7 +493,7 @@ mod tests {
         assert_eq!(junk.len(), 4);
         assert!(junk[0].path.ends_with("trash") && junk[0].size == 110); // the whole trash is one item
         assert!(junk[1].path.ends_with("cache/app") && junk[1].size == 6); // whole cache folder as one item
-        assert_eq!(progress.load(Ordering::Relaxed), 11); // node_modules and .git not walked
+        assert_eq!(progress.load(Ordering::Relaxed), 12); // node_modules and .git not walked
         assert_eq!(items.len(), 6);
         assert_eq!(human_size(1536), "1.5 KB");
     }
@@ -494,7 +513,7 @@ mod tests {
         fs::write(dir.join("mine/a.bin"), &body).unwrap();
         fs::write(dir.join("mine/b.bin"), &body).unwrap();
         fs::set_permissions(dir.join("mod@v1"), fs::Permissions::from_mode(0o555)).unwrap();
-        let places = Places { trash: None, downloads: None, junk: vec![], user: vec![] };
+        let places = Places { trash: None, downloads: None, junk: vec![], user: vec![], app_data: vec![] };
         let items = scan(&[&dir], &places, &AtomicUsize::new(0), |_, _| {});
         fs::set_permissions(dir.join("mod@v1"), fs::Permissions::from_mode(0o755)).unwrap();
         fs::remove_dir_all(&dir).unwrap();
@@ -509,7 +528,7 @@ mod tests {
             return; // root may delete anything
         }
         let etc = Path::new("/etc"); // root-owned everywhere
-        let places = Places { trash: None, downloads: None, junk: vec![etc.into()], user: vec![] };
+        let places = Places { trash: None, downloads: None, junk: vec![etc.into()], user: vec![], app_data: vec![] };
         let items = scan(&[etc], &places, &AtomicUsize::new(0), |_, _| {});
         assert!(items.is_empty());
     }
