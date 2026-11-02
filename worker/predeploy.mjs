@@ -51,6 +51,14 @@ for (const p of PLATFORMS) {
   if (e.url) {
     if (!existsSync(file(e.url))) problems.push(`${p}: update file ${e.url} is not in docs/`);
     else if (sha256(file(e.url)) !== e.sha256) problems.push(`${p}: sha256 of ${e.url} does not match`);
+    // What install() opens: a disk image on macOS, tar + gzip everywhere else. A hash matches a renamed
+    // .zip just as well as a real archive, and the app only finds out after downloading it.
+    else {
+      const head = readFileSync(file(e.url)).subarray(0, 2);
+      const gzip = head[0] === 0x1f && head[1] === 0x8b;
+      if (p !== "macos" && !gzip) problems.push(`${p}: ${e.url} is not gzip (starts ${head.toString("hex")}); installed copies cannot unpack it`);
+      if (p === "macos" && !e.url.endsWith(".dmg")) problems.push(`macos: ${e.url} must be a .dmg`);
+    }
   }
   if (p === "macos" && process.platform === "darwin" && existsSync(file(e.download))) {
     try { execFileSync("xcrun", ["stapler", "validate", file(e.download)], { stdio: "ignore" }); }

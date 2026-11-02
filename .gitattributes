@@ -1,0 +1,8 @@
+# The release manifests are signed over their exact bytes (packaging/publish-update.sh signs them, and
+# both worker/predeploy.mjs and src/update.rs verify them). Git on Windows checks text files out with
+# CRLF, which changes those bytes and makes every signature fail: a Windows machine then cannot deploy,
+# and anything it did deploy would be refused by every installed copy. These files keep their LF.
+docs/update.json        -text
+docs/update.json.sig    -text
+docs/update/*.json      -text
+docs/update/*.json.sig  -text
