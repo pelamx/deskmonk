@@ -1,7 +1,7 @@
 {
   "windows-x86_64": {
-    "sha256": "d64117c5b4564267e224fcfd56f234b2275b42672fe55fe8934208d2b5d1a235",
-    "url": "/downloads/update/deskmonk-0.5.8-windows-x86_64.tar.gz",
-    "version": "0.5.8"
+    "download": "/downloads/deskMonk-0.5.6-windows-x86_64.zip",
+    "size": 9389356,
+    "version": "0.5.6"
   }
 }
