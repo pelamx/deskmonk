@@ -1,5 +1,15 @@
 //! Mac App Store build only: compiles the StoreKit bridge (packaging/appstore/Store.swift) and links it.
 fn main() {
+    // The icon deskmonk.exe itself shows: in Explorer, on the Desktop, on a pinned shortcut and in the
+    // taskbar. Without it Windows draws a blank page, whatever icon the running window sets.
+    #[cfg(windows)]
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        println!("cargo:rerun-if-changed=assets/icon.ico");
+        winresource::WindowsResource::new()
+            .set_icon("assets/icon.ico")
+            .compile()
+            .expect("embed the Windows app icon");
+    }
     println!("cargo:rerun-if-changed=packaging/appstore/Store.swift");
     println!("cargo:rerun-if-env-changed=DEVELOPER_DIR");
     if std::env::var_os("CARGO_FEATURE_APPSTORE").is_none() || std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {

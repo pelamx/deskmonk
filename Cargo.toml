@@ -60,6 +60,11 @@ tray-icon = { version = "0.26.1", default-features = false, optional = true }
 # The status tray over D-Bus, without GTK (src/tray.rs).
 ksni = { version = "0.3.7", default-features = false, features = ["blocking", "async-io"], optional = true }
 
+[target.'cfg(windows)'.build-dependencies]
+# Puts the icon inside deskmonk.exe, so Explorer, the taskbar and a pinned shortcut show the monk
+# rather than a blank page. It finds the SDK's rc.exe itself, which a hand-written .rc cannot.
+winresource = "0.1"
+
 # macOS 27's dyld rejects some stripped proc-macro dylibs ("mis-aligned LINKEDIT string pool"), which rustc reports as "can't find crate".
 [profile.release.build-override]
 strip = false
