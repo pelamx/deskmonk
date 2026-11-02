@@ -1089,7 +1089,7 @@ dependencies = [
 
 [[package]]
 name = "deskmonk"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "argon2",
  "chacha20poly1305",
