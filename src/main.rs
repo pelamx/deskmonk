@@ -79,7 +79,7 @@ fn main() -> eframe::Result {
         egui::ViewportBuilder::default()
             .with_inner_size([1080.0, 700.0])
             .with_min_inner_size([760.0, 480.0])
-            .with_title("deskMonk by pelamx")
+            .with_title(format!("deskMonk {VERSION} by pelamx"))
             // Wayland compositors take the icon from the .desktop file matching this id.
             .with_app_id("deskmonk")
             .with_icon(Arc::new(window_icon)),
@@ -234,6 +234,7 @@ impl eframe::App for UnlockPrompt {
                 Some(false) => std::process::exit(1),
                 None => {}
             }
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| ui.weak(format!("deskMonk {VERSION}")));
         });
         no_input_method(&ctx);
     }
@@ -253,6 +254,9 @@ fn native_options(viewport: egui::ViewportBuilder) -> eframe::NativeOptions {
 
 const NO_OPENGL: &str = "DESKMONK_NO_OPENGL";
 
+/// Shown in every window, so a screenshot or a support message tells which build it is.
+const VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
+
 /// A machine where OpenGL won't start may still have Vulkan: runs once more with the default renderer.
 fn retry_without_opengl(result: &eframe::Result) {
     let Err(error) = result else { return };
@@ -269,7 +273,7 @@ fn unlock_prompt(app: PathBuf, icon: egui::IconData) -> eframe::Result {
         egui::ViewportBuilder::default()
             .with_inner_size([376.0, 380.0])
             .with_resizable(false)
-            .with_title("deskMonk")
+            .with_title(format!("deskMonk {VERSION}"))
             .with_app_id("deskmonk")
             .with_icon(Arc::new(icon)),
     );
@@ -2629,7 +2633,7 @@ impl eframe::App for App {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     ui.label(RichText::new("deskMonk").size(19.0).strong());
                     ui.label(RichText::new("by pelamx").size(13.0).color(ACCENT));
-                    ui.label(RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).size(12.0).color(muted));
+                    ui.label(RichText::new(VERSION).size(12.0).color(muted));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
                         let mut lang = i18n::lang();
