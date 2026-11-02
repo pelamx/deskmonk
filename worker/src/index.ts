@@ -8,6 +8,7 @@
 import { handleAdmin } from "./admin";
 import { handleLicense, type LicenseEnv } from "./license";
 import { handleMail, weekly } from "./mail";
+import { countryOf } from "./i18n";
 import { handleSite } from "./site";
 
 export interface Env extends LicenseEnv {
@@ -25,9 +26,17 @@ const SIZE_FIELDS = ["bytes", "duplicate_bytes", "junk_bytes", "old_download_byt
 const KINDS = ["scan", "clean", "open", "vault", "focus", "pro", "bought", "ping", "applock"];
 
 export default {
-  async fetch(req: Request, env: Env): Promise<Response> {
+  async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const path = new URL(req.url).pathname;
-    const site = await handleSite(req, env.ASSETS, path);
+    const site = await handleSite(req, env.ASSETS, path, (kind, source, platform) =>
+      // After the response, and a failed write never breaks the page.
+      ctx.waitUntil(
+        env.DB.prepare("INSERT INTO visits(ts, kind, source, country, platform) VALUES (?1, ?2, ?3, ?4, ?5)")
+          .bind(Math.floor(Date.now() / 1000), kind, source, countryOf(req), platform)
+          .run()
+          .catch(() => {}),
+      ),
+    );
     if (site !== null) return site;
 
     if (req.method === "POST" && path === "/api/events") {

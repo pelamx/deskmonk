@@ -5,7 +5,7 @@ import { handleLicense, inCidr, mayActivate, refundLast, newKey, periodEnd, plan
 import { handleMail, keyMail, weekNumbers, weeklyText } from "../src/mail";
 import { buyPage, js, pickLang } from "../src/pages";
 import { LANGS, USD, money, word } from "../src/i18n";
-import { adsScript, downloadLabel, platformOf } from "../src/site";
+import { adsScript, downloadLabel, platformOf, sourceOf } from "../src/site";
 
 test("validates events the way server/ does", () => {
   const good = `{"install_id":"abc-123","version":"0.1.0","os":"linux","client":"tui","kind":"scan","files":10,"bytes":2048,"junk_bytes":2048}`;
@@ -362,4 +362,17 @@ test("each platform's download comes from its own release file", () => {
   expect(downloadLabel(mac, "macos")).toBe("v0.5.7 · DMG · 17 MB");
   expect(downloadLabel({ version: "0.5.6", download: "/downloads/x.AppImage", size: 11258360 }, "linux-x86_64")).toBe("v0.5.6 · AppImage · x86_64 · 11 MB");
   // withDownloads uses HTMLRewriter, which only the Workers runtime has: checked on the live page after a deploy.
+});
+
+test("where a visitor came from", () => {
+  const home = new URL("https://deskmonk.app/");
+  expect(sourceOf(home, null)).toBe("direct");
+  expect(sourceOf(home, "https://deskmonk.app/pricing")).toBe("direct");
+  expect(sourceOf(home, "https://www.google.com.tr/")).toBe("google");
+  expect(sourceOf(home, "https://www.reddit.com/r/macapps/")).toBe("reddit.com");
+  expect(sourceOf(home, "not a url")).toBe("direct");
+  expect(sourceOf(new URL("https://deskmonk.app/?gclid=abc"), "https://www.google.com/")).toBe("google ads");
+  expect(sourceOf(new URL("https://deskmonk.app/?utm_source=Newsletter<b>"), null)).toBe("newsletterb");
+  expect(sourceOf(new URL("https://deskmonk.app/download/macos?from=reddit.com"), "https://deskmonk.app/")).toBe("reddit.com");
+  expect(sourceOf(new URL(`https://deskmonk.app/?utm_source=${"x".repeat(100)}`), null)).toHaveLength(60);
 });

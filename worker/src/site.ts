@@ -117,13 +117,32 @@ export function adsScript(req: Request): Response {
   return new Response(body, { headers: { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "private, no-cache", Vary: "Cookie, Accept-Language" } });
 }
 
-export async function handleSite(req: Request, assets: Fetcher, path: string): Promise<Response | null> {
+/** Where a visitor came from: the link's ?from= (our download buttons) or utm_source, a Google Ads click, else the
+ *  referring site's host ("google" for any Google search), else "direct". Lowercase, at most 60 plain characters. */
+export function sourceOf(url: URL, referer: string | null): string {
+  const tag = url.searchParams.get("from") ?? url.searchParams.get("utm_source") ?? (url.searchParams.has("gclid") ? "google ads" : null);
+  let host = "";
+  try { host = new URL(referer ?? "").hostname.replace(/^www\./, ""); } catch { /* no or bad Referer */ }
+  const raw = tag ?? (!host || host === url.hostname ? "direct" : /^google\.[a-z.]+$/.test(host) ? "google" : host);
+  return raw.toLowerCase().replace(/[^a-z0-9._ -]/g, "").slice(0, 60) || "direct";
+}
+
+/** Records a website visit or download (visits table) with its source; the IP address is not kept. */
+export type Track = (kind: "visit" | "download", source: string, platform: Platform | null) => void;
+
+// Crawlers and link previews fetch "/" too; they aren't visitors.
+const BOT = /bot|crawl|spider|slurp|preview|fetch|curl|wget|python|go-http|headless|monitor/i;
+
+export async function handleSite(req: Request, assets: Fetcher, path: string, track: Track = () => {}): Promise<Response | null> {
   if (path === "/ads.js") return adsScript(req);
+  const url = new URL(req.url);
+  const human = req.method === "GET" && !BOT.test(req.headers.get("User-Agent") ?? "");
   // /download/macos, and any download file that is no longer there (an old version's link): the platform's current file.
   // The worker only sees /downloads/ paths that have no file, as the static assets answer the rest first.
   if (path.startsWith("/download/") || path.startsWith("/downloads/")) {
     const platform = path.startsWith("/download/") ? (PLATFORMS as readonly string[]).includes(path.slice(10)) ? (path.slice(10) as Platform) : null : platformOf(path);
     const r = platform && (await releases(assets, new URL(req.url).origin))[platform];
+    if (r && human) track("download", sourceOf(url, req.headers.get("Referer")), platform);
     return r ? Response.redirect(new URL(r.download, req.url).toString(), 302) : new Response("not found", { status: 404 });
   }
   if (!PAGES.has(path) || (req.method !== "GET" && req.method !== "HEAD")) return null;
@@ -131,8 +150,11 @@ export async function handleSite(req: Request, assets: Fetcher, path: string): P
   const res = await assets.fetch(new Request(req.url, { method: req.method }));
   if (!res.ok || !(res.headers.get("Content-Type") ?? "").includes("text/html")) return res;
   const lang = pickLang(req);
-  const url = new URL(req.url);
-  const out = withDownloads(translate(res, lang, url), await releases(assets, url.origin));
+  const source = sourceOf(url, req.headers.get("Referer"));
+  // A click from one of our own pages to another is not a new visit.
+  // shortcut: that page's download buttons then say "direct", not where the visitor first came from; carry it in a cookie if that skews the numbers.
+  if (human && !(req.headers.get("Referer") ?? "").startsWith(url.origin)) track("visit", source, null);
+  const out = withDownloads(translate(res, lang, url), await releases(assets, url.origin), source);
   const headers = new Headers(out.headers);
   headers.delete("ETag");
   headers.set("Cache-Control", "no-cache");
@@ -142,8 +164,9 @@ export async function handleSite(req: Request, assets: Fetcher, path: string): P
   return new Response(out.body, { status: out.status, headers });
 }
 
-/** Points each a[data-download="<platform>"] at that platform's current file and writes its version and size in its <small>. */
-export function withDownloads(res: Response, rel: Partial<Record<Platform, Release>>): Response {
+/** Points each a[data-download="<platform>"] at /download/<platform> (which counts the download with its source and
+ *  sends the platform's current file) and writes its version and size in its <small>. */
+export function withDownloads(res: Response, rel: Partial<Record<Platform, Release>>, source: string): Response {
   let current: Platform | null = null;
   return new HTMLRewriter()
     .on("a[data-download]", {
@@ -151,7 +174,7 @@ export function withDownloads(res: Response, rel: Partial<Record<Platform, Relea
         const p = el.getAttribute("data-download") as Platform;
         const r = rel[p];
         current = r ? p : null;
-        if (r) el.setAttribute("href", r.download);
+        if (r) el.setAttribute("href", `/download/${p}?from=${encodeURIComponent(source)}`);
       },
     })
     .on("a[data-download] small", { element: (el) => { if (current) el.setInnerContent(downloadLabel(rel[current]!, current)); } })

@@ -28,3 +28,6 @@ CREATE TABLE IF NOT EXISTS admin_log(id INTEGER PRIMARY KEY, ts INTEGER NOT NULL
 CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, install_id TEXT NOT NULL, email TEXT, message TEXT NOT NULL,
     version TEXT NOT NULL, os TEXT NOT NULL, country TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS messages_ts ON messages(ts);
+-- Website visits and download clicks, with where they came from (src/site.ts sourceOf); no IP address, no cookie.
+CREATE TABLE IF NOT EXISTS visits(id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, kind TEXT NOT NULL, source TEXT NOT NULL, country TEXT, platform TEXT);
+CREATE INDEX IF NOT EXISTS visits_ts ON visits(ts);

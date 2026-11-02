@@ -317,8 +317,10 @@ async function dashboard(env: Env, query: string, notice: Notice): Promise<strin
     db.prepare(`WITH ${EV} SELECT COALESCE(country, '?') AS country, os, type, COUNT(DISTINCT install_id) AS n FROM ev WHERE ts >= ?1 GROUP BY 1, 2, 3`).bind(month),
     db.prepare(`WITH ${EV} SELECT os, type, ${spaceSums} FROM ev GROUP BY os, type`),
     db.prepare(`WITH ${EV} SELECT ${local("ts")} AS d, os, type, COUNT(DISTINCT install_id) AS n FROM ev WHERE ts >= ?1 GROUP BY 1, 2, 3`).bind(today - 29 * DAY),
+    db.prepare(`SELECT source, SUM(kind = 'visit') AS visits, SUM(kind = 'download') AS downloads, SUM(kind = 'visit' AND ts >= ?2) AS today
+                FROM visits WHERE ts >= ?1 GROUP BY source ORDER BY visits + downloads DESC LIMIT 40`).bind(month, today),
   ]);
-  const [installs, active, series, plans, features, countries, space, versions, clients, brands, daily, subsAll, log, countryDevices, spaceDevices, dailyDevices] =
+  const [installs, active, series, plans, features, countries, space, versions, clients, brands, daily, subsAll, log, countryDevices, spaceDevices, dailyDevices, sources] =
     results.map((r) => (r.results ?? []) as Row[]);
   const users = await usersQuery(db, month, 500);
   const [mobileNow, mobile] = await Promise.all([mobileLiveData(db, t), mobileData(db, t)]);
@@ -508,6 +510,19 @@ async function dashboard(env: Env, query: string, notice: Notice): Promise<strin
           <td class="num">${c.today}</td><td class="num">${c.pro}</td>${colCells(countryCols, countryDevices.filter((r) => r.country === c.country))}<td style="width:20%"><span class="track"><i style="width:${Math.round((c.month / Math.max(1, countries[0]?.month ?? 1)) * 100)}%"></i></span></td></tr>`)
         .join("") || `<tr><td colspan="${6 + countryCols.length}" class="muted">No countries yet: deskMonk 0.4 and later report them.</td></tr>`}
     </table></div>
+  </section>
+
+  <section class="card">
+    <p class="label">Where website visitors come from, last 30 days</p>
+    <div class="scroll"><table>
+      <tr><th>Source</th><th class="num">Visits</th><th class="num">Today</th><th class="num">Downloads</th><th class="num">Downloads per visit</th><th></th></tr>
+      ${sources
+        .map((r) => `<tr><td>${esc(r.source)}</td><td class="num">${r.visits}</td><td class="num">${r.today}</td><td class="num">${r.downloads}</td>
+          <td class="num">${r.visits ? `${Math.round((r.downloads / r.visits) * 100)}%` : "—"}</td><td style="width:20%"><span class="track"><i style="width:${Math.round((r.visits / Math.max(1, ...sources.map((x) => x.visits))) * 100)}%"></i></span></td></tr>`)
+        .join("") || '<tr><td colspan="6" class="muted">No visits recorded yet.</td></tr>'}
+    </table></div>
+    <p class="muted foot"><b>Source</b>: the link's utm_source, a Google Ads click, else the site the visitor came from (any Google search is "google"); "direct" when there is none.
+      Downloads are clicks on the site's download buttons, counted under the source of the page they were on. Your own visits are counted too.</p>
   </section>
 
   <section class="card">
