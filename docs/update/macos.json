@@ -1,0 +1,9 @@
+{
+  "macos": {
+    "download": "/downloads/deskMonk-0.5.7-macos.dmg",
+    "sha256": "29006aa7aaa84d76bb478c831f75df51a6592b04d75bf0d75d08158443a73306",
+    "size": 17628988,
+    "url": "/downloads/deskMonk-0.5.7-macos.dmg",
+    "version": "0.5.7"
+  }
+}
