@@ -57,15 +57,17 @@ fn every_manifest_names_a_file_that_is_there_and_matches_its_hash() {
     }
 }
 
-/// A manifest that claims a version older than this build would never offer an update to anyone on it.
+/// A manifest may lag Cargo.toml — the version is bumped long before the release is built, and that is
+/// not a broken state. Claiming a version that does not exist yet is: everyone on the old build would
+/// download it, find nothing, and the check would stay stuck there.
 #[test]
-fn no_manifest_is_behind_the_version_in_cargo_toml() {
+fn no_manifest_offers_a_version_that_was_never_built() {
     for (platform, path) in manifests() {
         let json: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         let Some(version) = json[&platform]["version"].as_str() else { continue }; // reported by the test above
         assert!(
-            !deskmonk::update::is_newer(env!("CARGO_PKG_VERSION"), version),
-            "{}: offers {version}, older than the {} in Cargo.toml — a release that stops halfway leaves everyone on the old build",
+            !deskmonk::update::is_newer(version, env!("CARGO_PKG_VERSION")),
+            "{}: offers {version}, which is newer than the {} this repo builds",
             path.display(),
             env!("CARGO_PKG_VERSION"),
         );
