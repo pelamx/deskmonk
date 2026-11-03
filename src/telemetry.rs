@@ -1,6 +1,6 @@
 //! Anonymous usage stats. Never sends file names or paths, only counts, byte totals and hardware specs.
-//! Every copy sends one basic "open" per start (random ID, version, OS, plan) so installs and active users can
-//! be counted; everything else (hardware, scans, cleaning, features) only after the user agreed.
+//! Every copy sends one basic "open" per start (random ID, hashed machine ID, version, OS, plan) so installs and
+//! active users can be counted; everything else (hardware, scans, cleaning, features) only after the user agreed.
 //! Disabled entirely unless built with `DESKMONK_TELEMETRY_URL=https://host/api/events`.
 
 use crate::hardware::Component;
@@ -130,9 +130,73 @@ impl Telemetry {
         event["channel"] = if cfg!(feature = "appstore") { "appstore" } else { "web" }.into();
         // Fire and forget: stats must never block or break cleaning.
         std::thread::spawn(move || {
+            if let Some(m) = machine_id() {
+                event["machine"] = m.into();
+            }
             let _ = ureq::post(url)
                 .header("Content-Type", "application/json")
                 .send(event.to_string());
         });
+    }
+}
+
+/// The same for every copy on one computer (GUI and terminal, any user, reinstalls), so /admin counts the
+/// computer once. Only a hash of the system's own machine UUID is sent, never the UUID itself.
+fn machine_id() -> Option<String> {
+    // The Mac App Store forbids identifying the device from its hardware; that copy counts per installation.
+    if cfg!(feature = "appstore") {
+        return None;
+    }
+    static ID: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        #[cfg(target_os = "macos")]
+        let raw = ioreg_uuid(&crate::hardware::run("ioreg", &["-rd1", "-c", "IOPlatformExpertDevice"]));
+        #[cfg(target_os = "windows")]
+        let raw = reg_guid(&crate::hardware::run("reg", &["query", r"HKLM\SOFTWARE\Microsoft\Cryptography", "/v", "MachineGuid"]));
+        #[cfg(target_os = "linux")]
+        let raw = ["/etc/machine-id", "/var/lib/dbus/machine-id"]
+            .iter()
+            .find_map(|p| fs::read_to_string(p).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        let raw: Option<String> = None;
+        raw.map(|r| hash_machine(&r))
+    })
+    .clone()
+}
+
+fn hash_machine(raw: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(format!("deskMonk machine {}", raw.to_lowercase()))[..16].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[allow(dead_code)]
+fn ioreg_uuid(out: &str) -> Option<String> {
+    let line = out.lines().find(|l| l.contains("\"IOPlatformUUID\""))?;
+    Some(line.rsplit('"').nth(1)?.to_string()).filter(|s| !s.is_empty())
+}
+
+#[allow(dead_code)]
+fn reg_guid(out: &str) -> Option<String> {
+    let line = out.lines().find(|l| l.contains("MachineGuid"))?;
+    line.split_whitespace().last().map(str::to_string).filter(|s| s.len() >= 32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn machine_id_from_each_system() {
+        let mac = "    \"IOPlatformSerialNumber\" = \"X\"\n    \"IOPlatformUUID\" = \"AB12CD34-0000-1111-2222-333344445555\"\n";
+        assert_eq!(ioreg_uuid(mac).as_deref(), Some("AB12CD34-0000-1111-2222-333344445555"));
+        let win = "\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Cryptography\r\n    MachineGuid    REG_SZ    5d1e2f3a-aaaa-bbbb-cccc-0123456789ab\r\n";
+        assert_eq!(reg_guid(win).as_deref(), Some("5d1e2f3a-aaaa-bbbb-cccc-0123456789ab"));
+        assert_eq!(ioreg_uuid(""), None);
+        assert_eq!(reg_guid("ERROR: not found"), None);
+        let h = hash_machine("AB12CD34-0000");
+        assert!(h.len() == 32 && h.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(h, hash_machine("ab12cd34-0000"), "case doesn't make another machine");
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        assert!(machine_id().is_some(), "this computer has a machine id");
     }
 }

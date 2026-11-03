@@ -69,6 +69,8 @@ export default {
 
 export interface Event {
   install_id: string;
+  /** Hash of the computer's machine UUID (apps from 0.5.13); every copy on one computer sends the same. */
+  machine: string | null;
   version: string;
   os: string;
   client: string;
@@ -132,6 +134,7 @@ export function parseEvent(body: string): Event {
   }
   return {
     install_id: text("install_id", 64),
+    machine: optional("machine", /^[0-9a-f]{32}$/),
     version: text("version", 32),
     os: text("os", 32),
     client: text("client", 16),
@@ -145,16 +148,28 @@ export function parseEvent(body: string): Event {
   };
 }
 
-async function insert(db: D1Database, e: Event, country: string | null): Promise<void> {
+export async function insert(db: D1Database, e: Event, country: string | null): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
+  // Stats are kept per computer: a copy that sends its machine id is filed under it, and that copy's earlier
+  // history (and a "mine" mark) moves there too, so a computer counts once however many copies it runs.
+  const id = e.machine ?? e.install_id;
+  const merge = e.machine
+    ? [
+        db.prepare("UPDATE events SET install_id = ?1 WHERE install_id = ?2").bind(id, e.install_id),
+        db.prepare("INSERT OR IGNORE INTO ignored_installs(install_id, ts) SELECT ?1, ts FROM ignored_installs WHERE install_id = ?2").bind(id, e.install_id),
+        db.prepare("INSERT OR IGNORE INTO hardware(install_id, ts, specs) SELECT ?1, ts, specs FROM hardware WHERE install_id = ?2").bind(id, e.install_id),
+        db.prepare("DELETE FROM hardware WHERE install_id = ?1").bind(e.install_id),
+      ]
+    : [];
   const stmts = [
+    ...merge,
     db
       .prepare(
         `INSERT INTO events(ts, install_id, version, os, client, kind, files, bytes, duplicate_bytes, junk_bytes, old_download_bytes, large_bytes,
                             country, plan, channel, detail)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)`,
       )
-      .bind(now, e.install_id, e.version, e.os, e.client, e.kind, e.files, ...e.sizes, country, e.plan, e.channel, e.detail),
+      .bind(now, id, e.version, e.os, e.client, e.kind, e.files, ...e.sizes, country, e.plan, e.channel, e.detail),
   ];
   if (e.specs !== null) {
     stmts.push(
@@ -163,7 +178,7 @@ async function insert(db: D1Database, e: Event, country: string | null): Promise
           `INSERT INTO hardware(install_id, ts, specs) VALUES (?1, ?2, ?3)
            ON CONFLICT(install_id) DO UPDATE SET ts = excluded.ts, specs = excluded.specs`,
         )
-        .bind(e.install_id, now, e.specs),
+        .bind(id, now, e.specs),
     );
   }
   await db.batch(stmts);

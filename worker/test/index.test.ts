@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { compareVersions, esc, handleAdmin, hardwareHtml, humanSize, mobileCard, mobileLive, worldMap } from "../src/admin";
-import { parseEvent } from "../src/index";
+import { insert, parseEvent } from "../src/index";
 import { handleLicense, inCidr, mayActivate, refundLast, newKey, periodEnd, planOf, verifySignature } from "../src/license";
 import { handleMail, keyMail, weekNumbers, weeklyText } from "../src/mail";
 import { buyPage, js, pickLang } from "../src/pages";
@@ -375,4 +375,23 @@ test("where a visitor came from", () => {
   expect(sourceOf(new URL("https://deskmonk.app/?utm_source=Newsletter<b>"), null)).toBe("newsletterb");
   expect(sourceOf(new URL("https://deskmonk.app/download/macos?from=reddit.com"), "https://deskmonk.app/")).toBe("reddit.com");
   expect(sourceOf(new URL(`https://deskmonk.app/?utm_source=${"x".repeat(100)}`), null)).toHaveLength(60);
+});
+
+test("one computer counts once: copies that send its machine id share it, with their earlier history and mine mark", async () => {
+  const db = memoryDb();
+  const m = "0123456789abcdef0123456789abcdef";
+  const ev = (install_id: string, machine?: string, specs?: unknown[]) =>
+    insert(db, parseEvent(JSON.stringify({ install_id, machine, version: "0.5.10", os: "macos", client: "gui", kind: "open", specs })), "TR");
+  await ev("old-copy"); // before the update: no machine id
+  db.exec(`INSERT INTO ignored_installs VALUES ('old-copy', 0)`);
+  await ev("old-copy", undefined, [{ kind: "Bilgisayar", brand: "Apple", name: "MacBook Pro", detail: "" }]);
+  await ev("old-copy", m); // updated
+  await ev("second-copy", m); // terminal version, another user, a reinstall
+  const ids = (await db.prepare("SELECT DISTINCT install_id AS id FROM events").all()).results.map((r: any) => r.id);
+  expect(ids).toEqual([m]);
+  expect((await db.prepare("SELECT install_id FROM ignored_installs WHERE install_id = ?1").bind(m).first())?.install_id).toBe(m);
+  expect((await db.prepare("SELECT install_id FROM hardware").all()).results.map((r: any) => r.install_id)).toEqual([m]);
+  await ev("phone"); // apps that send no machine id keep their own
+  expect((await db.prepare("SELECT COUNT(DISTINCT install_id) AS n FROM events").first()).n).toBe(2);
+  expect(() => parseEvent(`{"install_id":"a","machine":"NOT-HEX","version":"1","os":"macos","client":"gui","kind":"open"}`)).toThrow("invalid machine");
 });

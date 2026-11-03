@@ -142,7 +142,7 @@ pub fn detect() -> Vec<Component> {
 }
 
 #[allow(dead_code)]
-fn run(cmd: &str, args: &[&str]) -> String {
+pub(crate) fn run(cmd: &str, args: &[&str]) -> String {
     let mut command = std::process::Command::new(cmd);
     command.args(args);
     #[cfg(target_os = "windows")]
