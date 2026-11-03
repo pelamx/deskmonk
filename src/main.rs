@@ -24,6 +24,8 @@ use std::time::{Duration, Instant};
 #[cfg(target_os = "macos")]
 mod access;
 mod tray;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod keepalive;
 #[cfg(feature = "appstore")]
 mod store;
 
@@ -111,6 +113,13 @@ fn main() -> eframe::Result {
     {
         return unlock_prompt(app.into(), window_icon);
     }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    if let [_, flag, pid] = &std::env::args().collect::<Vec<_>>()[..]
+        && flag == keepalive::GUARD
+        && let Ok(pid) = pid.parse()
+    {
+        keepalive::guard(pid);
+    }
     #[cfg(target_os = "linux")]
     add_appimage_launcher();
     let options = native_options(
@@ -168,11 +177,13 @@ fn main() -> eframe::Result {
             }
             #[cfg(feature = "appstore")]
             store::start(&cc.egui_ctx);
-            // App Lock stops other apps, which the App Store sandbox does not allow.
-            if cfg!(any(target_os = "macos", target_os = "linux")) && !APPSTORE {
+            // App Lock stops other apps, which the App Store sandbox does not allow. A second window leaves it to the first.
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            if !APPSTORE && keepalive::first_copy() {
+                let was_stopped = applock::mark_running() && app.lock.active();
                 let (tx, rx) = channel();
                 let ctx = cc.egui_ctx.clone();
-                app.watcher = Some(applock::Watcher::start(app.lock.apps.clone(), move |watcher, blocked| {
+                app.watcher = Some(applock::Watcher::start(app.lock.apps.clone(), was_stopped, move |watcher, blocked| {
                     // From this thread: the window's own code doesn't run while it is on another Wayland workspace.
                     if cfg!(target_os = "linux") {
                         ask_unlock(watcher.clone(), blocked);
@@ -182,6 +193,7 @@ fn main() -> eframe::Result {
                     ctx.request_repaint();
                 }));
                 app.blocked = Some(rx);
+                app.keep_alive();
             }
             let logo = egui::ColorImage::from_rgba_unmultiplied(
                 [icon.width as usize, icon.height as usize],
@@ -191,8 +203,9 @@ fn main() -> eframe::Result {
                 cc.egui_ctx
                     .load_texture("logo", logo, egui::TextureOptions::LINEAR),
             );
+            app.start_hidden = std::env::args().any(|a| a == "--background");
             // `deskmonk FOLDER` scans that folder right away.
-            if let Some(dir) = std::env::args().nth(1) {
+            if let Some(dir) = std::env::args().nth(1).filter(|a| !a.starts_with("--")) {
                 app.root = dir;
                 app.autostart = true;
             }
@@ -240,6 +253,7 @@ const UNLOCK_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// On Linux the prompt is a program of its own: a new window opens on the workspace the user is on. Wayland does not
 /// let deskMonk raise its own window, and its window code doesn't run at all while it sits on another workspace.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn ask_unlock(watcher: applock::Watcher, app: PathBuf) {
     std::thread::spawn(move || {
         // /proc/self/exe still works after an update replaced the program file.
@@ -467,6 +481,12 @@ struct App {
     tray: Option<tray::Tray>,
     tray_rx: Option<Receiver<tray::Action>>,
     quitting: bool,
+    /// Quit with the App Lock password, so the guard does not start deskMonk again.
+    quit_ok: bool,
+    /// Started at login or by the guard: hides (macOS) or minimizes (Linux) the window once it is up.
+    start_hidden: bool,
+    /// The process that starts deskMonk again if it is stopped while apps are locked (see keepalive.rs).
+    guard: Option<std::process::Child>,
     /// What the last cleaning moved to the Trash, for "Put back" (macOS, see deskmonk::Undo).
     undo: deskmonk::Undo,
     status: String,
@@ -559,6 +579,9 @@ impl Default for App {
             tray: None,
             tray_rx: None,
             quitting: false,
+            quit_ok: false,
+            start_hidden: false,
+            guard: None,
             undo: Default::default(),
             status: String::new(),
             telemetry: Telemetry::load(),
@@ -770,7 +793,8 @@ impl App {
                 self.start_map(ui.ctx().clone());
             }
         }
-        if self.watcher.is_some() {
+        // Also in a second window, which leaves enforcing the locks to the first.
+        if cfg!(any(target_os = "macos", target_os = "linux")) && !APPSTORE {
             let n = self.lock.apps.len();
             let sub = match n {
                 0 => t("Kapalı", "Off", "Desactivado").to_string(),
@@ -1693,7 +1717,7 @@ impl App {
                     ui.label(RichText::new(t("Önce süren işlem bitsin.", "Let the running job finish first.", "Deje que termine la tarea en curso.")).color(muted));
                 }
                 if ui.add_enabled_ui(!busy, |ui| wide_button(ui, t("Şimdi yeniden başlat", "Restart now", "Reiniciar ahora"), Some(Color32::from_rgb(34, 160, 90)))).inner {
-                    update::restart();
+                    restart();
                 }
             } else if wide_button(ui, t("İndir", "Download", "Descargar"), Some(Color32::from_rgb(34, 160, 90))) {
                 open_url(&format!("{site}/#download"));
@@ -2389,13 +2413,13 @@ impl App {
             }
             ui.add_space(8.0);
             ui.label(RichText::new(if cfg!(target_os = "macos") { t(
-                "deskMonk açık olduğu sürece çalışır: pencereyi kapatmak sorun değil, ama Cmd+Q ile çıkılırsa kilit kalkar. Zaten açık olan bir uygulama, kapatılana kadar kilitlenmez.",
-                "Works while deskMonk runs: closing the window is fine, but quitting with Cmd+Q lifts the lock. An app that is already open is not locked until it quits.",
-                "Funciona mientras deskMonk esté abierto: cerrar la ventana no importa, pero salir con Cmd+Q quita el bloqueo. Una app que ya está abierta no se bloquea hasta que se cierre.",
+                "Kilitli uygulama varken deskMonk bilgisayar açılınca kendiliğinden başlar, kapatılırsa ya da durdurulursa geri gelir. Tamamen çıkmak, menü çubuğundaki Çık ile ve şifreyle olur. Zaten açık olan bir uygulama, kapatılana kadar kilitlenmez.",
+                "While apps are locked, deskMonk starts with your Mac and comes back if it is quit or stopped. Quitting it for good takes Quit in the menu bar and the password. An app that is already open is not locked until it quits.",
+                "Mientras haya apps bloqueadas, deskMonk se inicia con el Mac y vuelve si se cierra o se detiene. Para salir del todo hay que usar Salir en la barra de menús y la contraseña. Una app que ya está abierta no se bloquea hasta que se cierre.",
             ) } else { t(
-                "deskMonk açık olduğu sürece çalışır: pencereyi küçültmek sorun değil, ama deskMonk kapatılırsa kilit kalkar. Zaten açık olan bir uygulama, kapatılana kadar kilitlenmez.",
-                "Works while deskMonk runs: minimizing the window is fine, but closing deskMonk lifts the lock. An app that is already open is not locked until it quits.",
-                "Funciona mientras deskMonk esté abierto: minimizar la ventana no importa, pero cerrar deskMonk quita el bloqueo. Una app que ya está abierta no se bloquea hasta que se cierre.",
+                "Kilitli uygulama varken deskMonk bilgisayar açılınca kendiliğinden başlar ve durdurulursa geri gelir. deskMonk'u kapatmak şifre ister. Zaten açık olan bir uygulama, kapatılana kadar kilitlenmez.",
+                "While apps are locked, deskMonk starts with your computer and comes back if it is stopped. Closing deskMonk asks for the password. An app that is already open is not locked until it quits.",
+                "Mientras haya apps bloqueadas, deskMonk se inicia con el equipo y vuelve si se detiene. Cerrar deskMonk pide la contraseña. Una app que ya está abierta no se bloquea hasta que se cierre.",
             ) }).small().color(muted));
             if !self.lock_error.is_empty() && self.lock_prompt.is_none() && self.unlock.is_none() {
                 ui.label(RichText::new(&self.lock_error).color(DANGER));
@@ -2408,6 +2432,30 @@ impl App {
         self.lock_error = self.lock.save().err().map(|e| tf!("Kaydedilemedi: {e}", "Could not save: {e}", "No se pudo guardar: {e}")).unwrap_or_default();
         if let Some(w) = &self.watcher {
             w.set_apps(self.lock.apps.clone());
+        }
+        self.keep_alive();
+    }
+
+    /// While apps are locked, in the copy that enforces them: deskMonk starts at login and a guard starts it again when stopped.
+    fn keep_alive(&mut self) {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        if self.watcher.is_some() {
+            keepalive::sync(self.lock.active());
+            if self.lock.active() && !self.guard.as_mut().is_some_and(|g| matches!(g.try_wait(), Ok(None))) {
+                self.guard = keepalive::spawn_guard();
+            }
+        }
+    }
+
+    /// Quit from the menu bar / tray, or (Linux) the window's close button: while apps are locked, only with the password.
+    fn quit(&mut self, ctx: &egui::Context) {
+        if self.watcher.is_some() && self.lock.active() && !self.quit_ok {
+            self.page = Page::Lock;
+            bring_to_front(ctx);
+            self.ask_unlock(Unlock::Quit);
+        } else {
+            self.quitting = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
 
@@ -2461,6 +2509,11 @@ impl App {
                 t("Şifre ve tüm kilitler silinir.", "The password and all locks are deleted.", "Se borran la contraseña y todos los bloqueos."),
                 t("Kapat", "Turn off", "Desactivar"),
             ),
+            Unlock::Quit => (
+                t("deskMonk'tan çık", "Quit deskMonk", "Salir de deskMonk").into(),
+                t("deskMonk yeniden açılana kadar kilitli uygulamalar şifresiz açılır.", "Locked apps open without a password until deskMonk starts again.", "Las apps bloqueadas se abrirán sin contraseña hasta que deskMonk vuelva a abrirse."),
+                t("Çık", "Quit", "Salir"),
+            ),
         };
         let badge = matches!(action, Unlock::App(_)).then_some((icon, name.as_str()));
         let mut close = false;
@@ -2472,8 +2525,15 @@ impl App {
                             Unlock::App(app) => self.lock.apps.retain(|a| a != app),
                             Unlock::All => self.lock.apps.clear(),
                             Unlock::Off => self.lock = applock::Config::default(),
+                            Unlock::Quit => {
+                                self.quit_ok = true;
+                                self.quitting = true;
+                                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                            }
                         }
-                        self.save_lock();
+                        if !self.quit_ok {
+                            self.save_lock();
+                        }
                         close = true;
                     } else {
                         self.lock_error = wrong_password().into();
@@ -2575,6 +2635,13 @@ impl App {
     }
 }
 
+/// Restarts into the installed update; the new copy takes over App Lock.
+fn restart() -> ! {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    keepalive::hand_over();
+    update::restart()
+}
+
 /// Shows the window again (hidden, minimized or behind others) and gives it the focus.
 fn bring_to_front(ctx: &egui::Context) {
     #[cfg(target_os = "macos")]
@@ -2617,11 +2684,23 @@ impl eframe::App for App {
         while let Some(action) = self.tray_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
             match action {
                 tray::Action::Open => bring_to_front(ctx),
-                tray::Action::Quit => {
-                    self.quitting = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
+                tray::Action::Quit => self.quit(ctx),
             }
+        }
+        // After the first frames, once the window is up.
+        if self.start_hidden && ctx.cumulative_frame_nr() > 2 {
+            self.start_hidden = false;
+            #[cfg(target_os = "macos")]
+            if let Some(mtm) = objc2::MainThreadMarker::new() {
+                objc2_app_kit::NSApplication::sharedApplication(mtm).hide(None);
+            }
+            #[cfg(not(target_os = "macos"))]
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
+        #[cfg(target_os = "linux")]
+        if !self.quitting && self.watcher.is_some() && self.lock.active() && ctx.input(|i| i.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.quit(ctx);
         }
         #[cfg(target_os = "macos")]
         if !self.quitting && ctx.input(|i| i.viewport().close_requested()) {
@@ -2629,6 +2708,15 @@ impl eframe::App for App {
             if let Some(mtm) = objc2::MainThreadMarker::new() {
                 objc2_app_kit::NSApplication::sharedApplication(mtm).hide(None);
             }
+        }
+    }
+
+    // The guard starts deskMonk again unless it was quit with the password, App Lock is off, or the system is logging out.
+    // Cmd+Q and Dock → Quit on macOS end up here without the password: deskMonk comes back, hidden.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        if self.watcher.is_some() && (self.quit_ok || !self.lock.active() || keepalive::system_quit()) {
+            applock::clear_running();
         }
     }
 
@@ -2820,7 +2908,7 @@ impl eframe::App for App {
                             let button = egui::Button::new(RichText::new(label).strong().color(Color32::WHITE)).fill(Color32::from_rgb(34, 160, 90)).corner_radius(8);
                             if ui.add_enabled(!self.busy() && !downloading, button).on_hover_text(hint).on_disabled_hover_text(hint).clicked() {
                                 match found {
-                                    update::Found::Installed(_) => update::restart(),
+                                    update::Found::Installed(_) => restart(),
                                     update::Found::Available(_) => open_url(&format!("{site}/#download")),
                                     update::Found::Downloading(_) => {}
                                 }
@@ -3051,6 +3139,7 @@ enum Unlock {
     App(PathBuf),
     All,
     Off,
+    Quit,
 }
 
 /// App icons as textures, loaded a few per frame so opening a long list doesn't stall.

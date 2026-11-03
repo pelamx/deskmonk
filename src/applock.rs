@@ -1,5 +1,6 @@
 //! App lock (macOS, Linux): opening a locked app needs the deskMonk password.
-//! A privacy lock while deskMonk runs, not a security boundary: quitting deskMonk lifts it.
+//! A privacy lock while deskMonk runs, not a security boundary: whoever can run commands as the user can stop it.
+//! While apps are locked deskMonk starts at login, comes back when stopped, and quits only with the password (see keepalive.rs).
 //! An app is a .app bundle on macOS and a .desktop launcher on Linux.
 
 use sha2::{Digest, Sha256};
@@ -62,6 +63,11 @@ impl Config {
         !self.hash.is_empty()
     }
 
+    /// Locks in force: a password and at least one locked app.
+    pub fn active(&self) -> bool {
+        self.has_password() && !self.apps.is_empty()
+    }
+
     pub fn set_password(&mut self, password: &str) {
         self.salt = uuid::Uuid::new_v4().to_string();
         self.hash = hash(&self.salt, password);
@@ -73,6 +79,31 @@ impl Config {
             && given.len() == self.hash.len()
             && given.bytes().zip(self.hash.bytes()).fold(0, |acc, (a, b)| acc | (a ^ b)) == 0
     }
+}
+
+/// Present while deskMonk enforces the locks and has not been quit with the password (or by itself, to update).
+/// Left behind, it means deskMonk was stopped (killed, Cmd+Q, a crash) and a locked app may have been opened meanwhile.
+fn marker() -> Option<PathBuf> {
+    Some(crate::config_dir()?.join("applock-running"))
+}
+
+/// Sets the marker; returns true if it was left behind by a copy that was stopped.
+pub fn mark_running() -> bool {
+    let Some(path) = marker() else { return false };
+    let left = path.exists();
+    let _ = fs::create_dir_all(path.parent().unwrap()).and_then(|()| fs::write(&path, ""));
+    left
+}
+
+pub fn clear_running() {
+    if let Some(path) = marker() {
+        let _ = fs::remove_file(path);
+    }
+}
+
+/// deskMonk ended without the password while apps are locked: it should be started again.
+pub fn stopped_while_locked() -> bool {
+    marker().is_some_and(|p| p.exists()) && Config::load().active()
 }
 
 /// What an app is on this platform: a bundle folder on macOS, a launcher file on Linux.
@@ -237,6 +268,19 @@ impl State {
             }
         }
         (kill, ask)
+    }
+
+    /// deskMonk was stopped without the password: locked apps opened meanwhile are asked to quit, and locked again.
+    fn stop_running(&mut self, procs: &[Proc], now: Instant) {
+        for app in &self.apps {
+            let pids: Vec<i32> = procs.iter().filter(|p| matcher(app)(p)).map(|p| p.0).collect();
+            if !pids.is_empty() {
+                self.allowed.remove(app);
+                self.left_open.remove(app);
+                self.term.extend(pids);
+                self.stopping.insert(app.clone(), now);
+            }
+        }
     }
 
     /// Locked apps already running are left alone (they may hold unsaved work) until they quit or are launched again.
@@ -460,15 +504,29 @@ pub struct Watcher(Arc<Mutex<State>>);
 
 impl Watcher {
     /// `on_blocked` runs (on the watcher thread) when a locked app was stopped and needs the password.
-    pub fn start(apps: Vec<PathBuf>, on_blocked: impl Fn(&Watcher, PathBuf) + Send + 'static) -> Self {
+    /// `was_stopped`: the last copy was stopped without the password, so locked apps already running are not trusted.
+    pub fn start(apps: Vec<PathBuf>, was_stopped: bool, on_blocked: impl Fn(&Watcher, PathBuf) + Send + 'static) -> Self {
         let watcher = Watcher(Arc::new(Mutex::new(State::default())));
         watcher.set_apps(apps);
+        if was_stopped {
+            watcher.0.lock().unwrap().stop_running(&processes(), Instant::now());
+        }
         let this = watcher.clone();
         let state = watcher.0.clone();
         std::thread::spawn(move || {
             let launches = Launches::new();
             let mut burst_until = Instant::now();
+            let stamp = || config_path().and_then(|p| fs::metadata(p).ok()).and_then(|m| m.modified().ok());
+            let mut seen = stamp();
             loop {
+                // Another deskMonk window (one that does not enforce the locks) may have changed the locked apps.
+                if stamp() != seen {
+                    seen = stamp();
+                    let apps = Config::load().apps;
+                    if state.lock().unwrap().apps != apps {
+                        this.set_apps(apps);
+                    }
+                }
                 if Instant::now() < burst_until {
                     std::thread::sleep(Duration::from_millis(5));
                 } else if launches.wait(Duration::from_millis(300)) {
@@ -797,5 +855,24 @@ mod tests {
         let mut state = State { apps: vec![app.clone()], ..Default::default() };
         state.allow_running(&running, t0);
         assert_eq!(state.check(&running, t0), (vec![], vec![]));
+    }
+
+    #[test]
+    fn after_being_stopped_running_locked_apps_are_asked_to_quit_then_locked() {
+        let (app, running, _) = notes();
+        let t0 = Instant::now();
+        let mut state = State { apps: vec![app.clone()], ..Default::default() };
+        // As set_apps does at start: running apps would be left open.
+        state.allow_running(&running, t0);
+        state.stop_running(&running, t0);
+        assert_eq!(std::mem::take(&mut state.term), [42]);
+        // Time to save its work, then stopped hard with the password prompt.
+        assert_eq!(state.check(&running, t0 + Duration::from_secs(4)), (vec![], vec![]));
+        assert_eq!(state.check(&running, t0 + Duration::from_secs(5)), (vec![42], vec![app.clone()]));
+        // Quit by itself instead: no prompt now, the next launch asks.
+        let mut state = State { apps: vec![app.clone()], ..Default::default() };
+        state.stop_running(&running, t0);
+        assert_eq!(state.check(&[], t0 + Duration::from_secs(1)), (vec![], vec![]));
+        assert_eq!(state.check(&running, t0 + Duration::from_secs(2)), (vec![42], vec![app.clone()]));
     }
 }

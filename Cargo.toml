@@ -46,7 +46,7 @@ walkdir = "2"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", optional = true, default-features = false, features = ["std", "NSApplication", "NSResponder", "NSWorkspace", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSGraphics", "NSGraphicsContext"] }
 # Not optional: the library moves files to the Trash through NSFileManager (lib.rs, to_trash).
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSGeometry", "NSURL", "NSData", "NSError", "NSArray", "NSFileManager"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSGeometry", "NSURL", "NSData", "NSError", "NSArray", "NSFileManager", "NSAppleEventManager", "NSAppleEventDescriptor"] }
 
 [target.'cfg(unix)'.dependencies]
 # Already in the tree; statvfs and page-cache control for the disk speed test.
