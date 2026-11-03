@@ -1,9 +1,9 @@
 {
   "linux-x86_64": {
-    "download": "/downloads/deskMonk-0.5.11-linux-x86_64.AppImage",
-    "sha256": "cf8b050da0d6deb75ebf8e18dc816fd2c4931df582e4f0f80060f5a36af747e2",
-    "size": 11938296,
-    "url": "/downloads/update/deskMonk-0.5.11-linux-x86_64.tar.gz",
-    "version": "0.5.11"
+    "download": "/downloads/deskMonk-0.5.12-linux-x86_64.AppImage",
+    "sha256": "ed49f38f9b97ccebbe413e25d1a600e783dff45719cd1afb31b137ed6e91fc17",
+    "size": 11942392,
+    "url": "/downloads/update/deskMonk-0.5.12-linux-x86_64.tar.gz",
+    "version": "0.5.12"
   }
 }
