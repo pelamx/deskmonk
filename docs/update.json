@@ -10,8 +10,8 @@
     "version": "0.5.10"
   },
   "windows-x86_64": {
-    "sha256": "899f2debe4db1ba0775915c67bb9687bc1253953bf891027da7c6bc1836cd48c",
-    "url": "/downloads/update/deskMonk-0.5.9-windows-x86_64.tar.gz",
-    "version": "0.5.9"
+    "sha256": "eb70e775c4058a319fa9d43584990c2eb1c69aec57a3fbfdf399d633cfb138c9",
+    "url": "/downloads/update/deskMonk-0.5.11-windows-x86_64.tar.gz",
+    "version": "0.5.11"
   }
 }
