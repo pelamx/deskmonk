@@ -167,9 +167,17 @@ fn target() -> Option<PathBuf> {
         if std::env::var_os("APPIMAGE").is_some() {
             return None;
         }
-        exe
+        unold(&exe)
     };
     writable(target.parent()?).then_some(target)
+}
+
+/// `.<name>.old` → `<name>`: after an update, Linux's /proc/self/exe names the renamed old file, so "Restart now"
+/// would start the old version again.
+#[cfg(not(target_os = "macos"))]
+fn unold(p: &Path) -> PathBuf {
+    let name = p.file_name().unwrap_or_default().to_string_lossy();
+    name.strip_prefix('.').and_then(|n| n.strip_suffix(".old")).map_or_else(|| p.to_path_buf(), |n| sibling(p, n))
 }
 
 fn writable(dir: &Path) -> bool {
@@ -288,6 +296,14 @@ fn remember_installed(version: &str) {
 mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn restart_starts_the_new_file() {
+        let old = old_path(Path::new("/home/u/.local/bin/deskmonk"));
+        assert_eq!(unold(&old), Path::new("/home/u/.local/bin/deskmonk"));
+        assert_eq!(unold(Path::new("/opt/deskmonk")), Path::new("/opt/deskmonk"));
+    }
 
     #[test]
     fn newer_versions() {
