@@ -1,5 +1,6 @@
 //! Keeps App Lock in force while deskMonk's window is not open: while apps are locked it starts at login (a LaunchAgent on
-//! macOS, an XDG autostart entry on Linux) and a guard process starts it again when it was stopped without the password.
+//! macOS, an XDG autostart entry on Linux, a per-user Run entry on Windows) and a guard process starts it again when it
+//! was stopped without the password.
 //! Only one copy enforces the locks. Not a security boundary: whoever can run commands as the user can remove both.
 
 use deskmonk::applock;
@@ -59,7 +60,32 @@ fn entry(exe: &str) -> Option<String> {
     ))
 }
 
+/// Windows keeps login items in the registry, not in a file. Per user and without admin rights, like
+/// the LaunchAgent and the autostart entry: the user can take it out again in Task Manager > Startup.
+/// `reg.exe` rather than the registry API: five lines instead of fifty of UTF-16 and handles, and it
+/// runs rarely — only when the last app is locked or unlocked.
+#[cfg(windows)]
+pub fn sync(active: bool) {
+    use std::os::windows::process::CommandExt;
+    const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+    const NAME: &str = "deskMonk App Lock";
+    const NO_WINDOW: u32 = 0x0800_0000; // CREATE_NO_WINDOW: reg.exe must not flash a console
+    let mut cmd = std::process::Command::new("reg.exe");
+    if active {
+        let Some(exe) = exe() else { return };
+        // The value is one command line: the program is quoted, so a path with spaces still runs.
+        cmd.args(["add", RUN_KEY, "/v", NAME, "/t", "REG_SZ", "/f", "/d"]).arg(format!("\"{}\" {BACKGROUND}", exe.display()));
+    } else {
+        cmd.args(["delete", RUN_KEY, "/v", NAME, "/f"]);
+    }
+    // Deleting a value that is not there answers with an error; that is the state we wanted anyway.
+    if let Err(e) = cmd.creation_flags(NO_WINDOW).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status() {
+        eprintln!("login entry: {e}");
+    }
+}
+
 /// Starts deskMonk at login while apps are locked (`active`), and not when they are not.
+#[cfg(not(windows))]
 pub fn sync(active: bool) {
     let Some(path) = entry_path() else { return };
     let result = if active {
@@ -79,26 +105,44 @@ pub fn sync(active: bool) {
 /// True for the one copy that enforces the locks; a second window (Linux has no single-app rule) leaves it to the first.
 /// The lock goes with the process, also when it is killed.
 pub fn first_copy() -> bool {
-    use std::os::fd::AsRawFd;
     let Some(dir) = deskmonk::config_dir() else { return true };
     let _ = fs::create_dir_all(&dir);
-    let Ok(file) = fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join("applock.lock")) else { return true };
-    // A copy restarting itself into an update lets go first (hand_over).
-    let first = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
-    if first {
-        LOCK.set(file).ok();
+    let path = dir.join("applock.lock");
+    let mut options = fs::OpenOptions::new();
+    options.create(true).truncate(false).write(true);
+    // Windows has no flock: opening the file while sharing it with nobody is the same bargain, and
+    // the OS drops it when the process ends, however it ends.
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(0);
     }
-    first
+    let Ok(file) = options.open(&path) else { return cfg!(not(windows)) };
+    // A copy restarting itself into an update lets go first (hand_over).
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return false;
+        }
+    }
+    *LOCK.lock().unwrap() = Some(file);
+    true
 }
 
-static LOCK: std::sync::OnceLock<fs::File> = std::sync::OnceLock::new();
+static LOCK: std::sync::Mutex<Option<fs::File>> = std::sync::Mutex::new(None);
 
 /// Before restarting into an update: the next copy takes over the locks, and the guard does not start this one again.
 pub fn hand_over() {
-    if let Some(file) = LOCK.get() {
-        use std::os::fd::AsRawFd;
+    if let Some(file) = LOCK.lock().unwrap().take() {
         applock::clear_running();
-        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+        }
+        // Windows releases it when the handle closes.
+        drop(file);
     }
 }
 
@@ -113,12 +157,36 @@ pub fn spawn_guard() -> Option<std::process::Child> {
     child.map_err(|e| eprintln!("guard: {e}")).ok()
 }
 
-/// The guard: once deskMonk `pid` has ended, starts it again if it was stopped while apps are locked.
-pub fn guard(pid: i32) -> ! {
+/// Waits for deskMonk `pid` to end.
+#[cfg(unix)]
+fn wait_for(pid: i32) {
     // shortcut: polls once a second, and a pid reused that fast keeps it waiting; harmless.
     while unsafe { libc::kill(pid, 0) } == 0 {
         std::thread::sleep(Duration::from_secs(1));
     }
+}
+
+/// Windows hands out a handle that is signalled when the process ends, so there is nothing to poll
+/// and no window in which a reused pid could be mistaken for the one being watched.
+#[cfg(windows)]
+fn wait_for(pid: i32) {
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_FAILED};
+    use windows_sys::Win32::System::Threading::{INFINITE, OpenProcess, WaitForSingleObject};
+    // windows-sys keeps this one under its filesystem feature, which is a lot to pull in for a number.
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    let handle = unsafe { OpenProcess(SYNCHRONIZE, 0, pid as u32) };
+    if handle.is_null() {
+        return; // already gone, or not ours to watch
+    }
+    if unsafe { WaitForSingleObject(handle, INFINITE) } == WAIT_FAILED {
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    unsafe { CloseHandle(handle) };
+}
+
+/// The guard: once deskMonk `pid` has ended, starts it again if it was stopped while apps are locked.
+pub fn guard(pid: i32) -> ! {
+    wait_for(pid);
     // At logout the session ends this process too, within this pause.
     std::thread::sleep(Duration::from_secs(2));
     if applock::stopped_while_locked()
@@ -143,7 +211,31 @@ pub fn system_quit() -> bool {
     })
 }
 
-#[cfg(target_os = "linux")]
+/// Linux and Windows: the guard is a child of this session, so logging out or shutting down ends it
+/// too and nothing starts deskMonk again. Only a quit by hand has to be told apart, and it is not.
+#[cfg(not(target_os = "macos"))]
 pub fn system_quit() -> bool {
     false
+}
+
+/// The Windows pieces that have no counterpart anywhere else. The Run entry is left out on purpose:
+/// a test that writes it would also delete a real one from the machine of whoever runs the suite.
+#[cfg(all(test, windows))]
+mod tests {
+    #[test]
+    fn the_guard_waits_for_the_process_to_end() {
+        let system = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        let mut child = std::process::Command::new(format!(r"{system}\System32\cmd.exe"))
+            .args(["/c", "ping -n 3 127.0.0.1 >nul"])
+            .stdin(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id() as i32;
+        let start = std::time::Instant::now();
+        super::wait_for(pid);
+        let waited = start.elapsed();
+        let _ = child.wait();
+        assert!(waited.as_millis() > 500, "returned before the process ended: {waited:?}");
+        assert!(waited.as_secs() < 20, "did not notice it ended: {waited:?}");
+    }
 }

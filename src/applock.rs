@@ -1,4 +1,4 @@
-//! App lock (macOS, Linux): opening a locked app needs the deskMonk password.
+//! App lock (macOS, Linux, Windows): opening a locked app needs the deskMonk password.
 //! A privacy lock while deskMonk runs, not a security boundary: whoever can run commands as the user can stop it.
 //! While apps are locked deskMonk starts at login, comes back when stopped, and quits only with the password (see keepalive.rs).
 //! An app is a .app bundle on macOS and a .desktop launcher on Linux.
@@ -106,15 +106,36 @@ pub fn stopped_while_locked() -> bool {
     marker().is_some_and(|p| p.exists()) && Config::load().active()
 }
 
-/// What an app is on this platform: a bundle folder on macOS, a launcher file on Linux.
-pub const EXT: &str = if cfg!(target_os = "linux") { "desktop" } else { "app" };
+/// What an app is on this platform: a bundle folder on macOS, a launcher file on Linux, a program on Windows.
+pub const EXT: &str = if cfg!(target_os = "linux") {
+    "desktop"
+} else if cfg!(windows) {
+    "exe"
+} else {
+    "app"
+};
 
 /// Apps that must never be locked: killing them breaks the desktop or relaunches in a loop.
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 pub fn can_lock(app: &Path) -> bool {
     app.extension().is_some_and(|e| e == EXT)
         && !app.starts_with("/System/Library/CoreServices")
         && std::env::current_exe().map_or(true, |me| !me.starts_with(app))
+}
+
+/// Windows: anything under %SystemRoot% runs the desktop itself, and an uninstaller is not an app.
+#[cfg(windows)]
+pub fn can_lock(app: &Path) -> bool {
+    // Windows paths are case-insensitive, and %SystemRoot% is spelled "C:\WINDOWS" on many machines,
+    // so Path::starts_with (which compares components byte for byte) would miss it.
+    let key = |p: &Path| p.to_string_lossy().to_lowercase().replace('/', "\\");
+    let system = std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
+    let path = key(app);
+    let stem = app.file_stem().unwrap_or_default().to_string_lossy().to_lowercase();
+    app.extension().is_some_and(|e| e.eq_ignore_ascii_case(EXT))
+        && !path.starts_with(&format!("{}\\", key(&system).trim_end_matches('\\')))
+        && !stem.starts_with("unins")
+        && std::env::current_exe().map_or(true, |me| key(&me) != path)
 }
 
 /// Launchers the menu shows, not deskMonk itself. Terminal apps are left out: deskMonk could not reopen them in a terminal.
@@ -151,6 +172,19 @@ pub fn name(app: &Path) -> String {
 
 /// Folders apps are installed in, most specific first.
 fn app_dirs() -> Vec<PathBuf> {
+    #[cfg(windows)]
+    {
+        // Each program folder once: in a 64-bit process ProgramFiles and ProgramW6432 are the same
+        // folder, and walking both would list every app twice, which sorting by name cannot undo.
+        let mut dirs: Vec<PathBuf> = ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"].iter().filter_map(std::env::var_os).map(PathBuf::from).collect();
+        // Per-user installs (Chrome, VS Code, Spotify, most Electron apps) live here, not in Program Files.
+        dirs.extend(dirs::data_local_dir().map(|d| d.join("Programs")));
+        let key = |d: &PathBuf| d.to_string_lossy().to_lowercase().trim_end_matches('\\').to_owned();
+        dirs.sort_by_key(key);
+        dirs.dedup_by_key(|d| key(d));
+        return dirs;
+    }
+    #[cfg(not(windows))]
     if cfg!(target_os = "linux") {
         // XDG data dirs, plus Flatpak and Snap exports in case the session did not add them.
         let system = std::env::var("XDG_DATA_DIRS").ok().filter(|v| !v.is_empty()).unwrap_or("/usr/local/share:/usr/share".into());
@@ -172,8 +206,10 @@ fn app_dirs() -> Vec<PathBuf> {
 /// A launcher in a more specific folder hides one with the same file name (XDG rule: ~/.local overrides /usr).
 pub fn installed_apps() -> Vec<PathBuf> {
     let mut apps = Vec::new();
+    // Windows nests a program one folder deeper than the others: Google\Chrome\Application\chrome.exe.
+    let depth = if cfg!(windows) { 2 } else { 1 };
     for dir in app_dirs() {
-        apps_in(&dir, 1, &mut apps);
+        apps_in(&dir, depth, &mut apps);
     }
     let mut seen = HashSet::new();
     apps.retain(|a| seen.insert(a.file_name().map(|n| n.to_os_string())) && can_lock(a));
@@ -181,6 +217,7 @@ pub fn installed_apps() -> Vec<PathBuf> {
     apps
 }
 
+#[cfg(not(windows))]
 fn apps_in(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
     for path in fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()) {
         if path.extension().is_some_and(|e| e == EXT) {
@@ -189,6 +226,60 @@ fn apps_in(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
             apps_in(&path, depth - 1, out);
         }
     }
+}
+
+/// Windows has no app bundles: one app per folder, the .exe named after its folder, else the biggest.
+/// A program folder also holds updaters, crash handlers and helpers, and listing all of them is unusable.
+#[cfg(windows)]
+fn apps_in(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
+    let folder = dir.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+    let mut best: Option<(bool, u64, PathBuf)> = None;
+    for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        let path = entry.path();
+        if meta.is_dir() {
+            if depth > 0 {
+                apps_in(&path, depth - 1, out);
+            }
+        } else if path.extension().is_some_and(|e| e.eq_ignore_ascii_case(EXT)) && is_gui_app(&path) {
+            let named = path.file_stem().unwrap_or_default().to_string_lossy().to_lowercase() == folder;
+            let candidate = (named, meta.len(), path);
+            if best.as_ref().is_none_or(|b| (b.0, b.1) < (candidate.0, candidate.1)) {
+                best = Some(candidate);
+            }
+        }
+    }
+    out.extend(best.map(|(_, _, path)| path));
+}
+
+/// Windows marks GUI programs in the PE header. Console tools (bash, gh, 7za, updaters) share the
+/// program folders but are not apps anyone locks, and they crowd the real ones out of the list.
+/// Anything unreadable counts as an app, so a failure here can never hide one.
+#[cfg(windows)]
+fn is_gui_app(exe: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let subsystem = |mut f: fs::File| -> io::Result<u16> {
+        let mut at = [0u8; 4];
+        f.seek(SeekFrom::Start(0x3C))?; // e_lfanew: where the PE header starts
+        f.read_exact(&mut at)?;
+        let pe = u32::from_le_bytes(at) as u64;
+        // Check the signature first: without it any file long enough to reach the offset below
+        // would be read as a subsystem of 0 and dropped as "not an app".
+        let mut sig = [0u8; 4];
+        f.seek(SeekFrom::Start(pe))?;
+        f.read_exact(&mut sig)?;
+        if &sig != b"PE\0\0" {
+            return Err(io::Error::other("not a PE file"));
+        }
+        // Signature (4) + COFF header (20), then Subsystem 68 bytes into the optional header —
+        // the same offset for PE32 and PE32+, which differ only after it.
+        f.seek(SeekFrom::Start(pe + 4 + 20 + 68))?;
+        let mut sub = [0u8; 2];
+        f.read_exact(&mut sub)?;
+        Ok(u16::from_le_bytes(sub))
+    };
+    // 2 is IMAGE_SUBSYSTEM_WINDOWS_GUI.
+    fs::File::open(exe).and_then(subsystem).map_or(true, |s| s == 2)
 }
 
 #[derive(Default)]
@@ -301,7 +392,16 @@ impl State {
 #[cfg(not(target_os = "linux"))]
 fn matcher(app: &Path) -> impl Fn(&Proc) -> bool + use<> {
     let name = app.file_name().map(|n| n.to_os_string());
-    move |(_, process, _, _)| name.as_ref().is_some_and(|name| process.components().any(|c| c.as_os_str() == name))
+    move |(_, process, _, _)| {
+        name.as_ref().is_some_and(|name| {
+            process.components().any(|c| {
+                let part = c.as_os_str();
+                // Windows filenames are case-insensitive, and the spelling the process list reports
+                // need not be the one on disk, so an exact compare would quietly stop locking the app.
+                if cfg!(windows) { part.eq_ignore_ascii_case(name) } else { part == name }
+            })
+        })
+    }
 }
 
 /// Matches the launcher's program, or a process the desktop started for this launcher: GNOME, KDE, uwsm,
@@ -544,6 +644,10 @@ impl Watcher {
                         unsafe { libc::kill(pid, signal) };
                     }
                 }
+                #[cfg(windows)]
+                for pid in kill.into_iter().chain(term) {
+                    stop(pid);
+                }
                 ask.into_iter().for_each(|app| on_blocked(&this, app));
                 launches.watch(&apps);
             }
@@ -624,10 +728,50 @@ fn processes() -> Vec<Proc> {
         .collect()
 }
 
-// shortcut: no app lock on Windows; it would need its own process listing.
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+/// Windows: one snapshot names every process and its parent. The name is all [`matcher`] needs, and
+/// opening a handle per process several times a second to read its full path is not worth it.
+#[cfg(windows)]
+fn processes() -> Vec<Proc> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS};
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Vec::new();
+    }
+    let me = std::process::id();
+    let mut entry = PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..unsafe { std::mem::zeroed() } };
+    let mut procs = Vec::new();
+    let mut more = unsafe { Process32FirstW(snapshot, &mut entry) };
+    while more != 0 {
+        let name = &entry.szExeFile[..entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(0)];
+        if entry.th32ProcessID != me && !name.is_empty() {
+            procs.push((entry.th32ProcessID as i32, PathBuf::from(String::from_utf16_lossy(name)), String::new(), entry.th32ParentProcessID as i32));
+        }
+        more = unsafe { Process32NextW(snapshot, &mut entry) };
+    }
+    unsafe { CloseHandle(snapshot) };
+    procs
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 fn processes() -> Vec<Proc> {
     Vec::new()
+}
+
+/// Stops a process. Windows has no "ask it to quit" signal that reaches a GUI app from outside, so
+/// both the polite list and the hard one end here; an app launched while locked has nothing to save yet.
+/// Fails for other users' processes and elevated ones, which this lock does not reach anyway.
+#[cfg(windows)]
+fn stop(pid: i32) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid as u32) };
+    if !handle.is_null() {
+        unsafe {
+            TerminateProcess(handle, 1);
+            CloseHandle(handle);
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -646,7 +790,17 @@ fn open(app: &Path) {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+/// Windows: the program is the app, so it is started directly. From the home folder, so it does not
+/// hold deskMonk's own folder open and block the next update from replacing it.
+#[cfg(windows)]
+fn open(app: &Path) {
+    let dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("C:\\"));
+    if let Err(e) = std::process::Command::new(app).current_dir(dir).spawn() {
+        eprintln!("could not open {}: {e}", app.display());
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 fn open(_: &Path) {}
 
 
@@ -654,6 +808,36 @@ fn open(_: &Path) {}
 mod tests {
     use super::*;
 
+    /// Windows: one app per program folder, and never the desktop or an uninstaller.
+    #[cfg(windows)]
+    #[test]
+    fn picks_one_app_per_program_folder() {
+        let dir = std::env::temp_dir().join(format!("deskmonk-winapps-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        // A real program folder: the app, its updater and a helper, plus a nested one.
+        fs::create_dir_all(dir.join("Notes")).unwrap();
+        fs::create_dir_all(dir.join("Browser/Application")).unwrap();
+        for (path, bytes) in [
+            ("Notes/notes.exe", 10),          // named after the folder: the app
+            ("Notes/notes_updater.exe", 900), // bigger, but not the folder's name
+            ("Notes/readme.txt", 10),
+            ("Browser/Application/browser.exe", 10),
+        ] {
+            fs::write(dir.join(path), vec![0u8; bytes]).unwrap();
+        }
+        let mut found = Vec::new();
+        apps_in(&dir, 2, &mut found);
+        found.sort();
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(found, vec![dir.join("Browser/Application/browser.exe"), dir.join("Notes/notes.exe")]);
+
+        let system = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        assert!(!can_lock(Path::new(&format!(r"{system}\explorer.exe"))), "the desktop must stay unlockable");
+        assert!(!can_lock(Path::new(r"C:\Program Files\Notes\unins000.exe")), "an uninstaller is not an app");
+        assert!(can_lock(Path::new(r"C:\Program Files\Notes\notes.exe")));
+    }
+
+    #[cfg(not(windows))]
     #[test]
     fn finds_apps_one_folder_deep() {
         let dir = std::env::temp_dir().join(format!("deskmonk-apps-{}", std::process::id()));
