@@ -49,7 +49,7 @@ fn locks_a_program_started_through_a_wrapper_script() {
     std::fs::write(&app, format!("[Desktop Entry]\nType=Application\nName=Wrapped\nExec=\"{}\" 30 %U\n", script.display())).unwrap();
 
     let (tx, rx) = channel();
-    let _watcher = Watcher::start(vec![app.clone()], move |_, a| tx.send(a).unwrap());
+    let _watcher = Watcher::start(vec![app.clone()], false, move |_, a| tx.send(a).unwrap());
     let mut child = Command::new(&script).arg("30").spawn().unwrap();
     let stopped = eventually(|| exited(&mut child));
     let _ = child.kill();
@@ -74,7 +74,7 @@ fn a_program_left_open_quits_when_launched_again_even_briefly() {
     let mut open = Command::new(&exe).arg("30").spawn().unwrap();
     assert!(eventually(|| running_copies(&exe).len() == 1));
     let (tx, rx) = channel();
-    let watcher = Watcher::start(vec![app.clone()], move |_, a| tx.send(a).unwrap());
+    let watcher = Watcher::start(vec![app.clone()], false, move |_, a| tx.send(a).unwrap());
 
     // Left alone while nothing is launched.
     std::thread::sleep(Duration::from_millis(1000));
@@ -104,7 +104,7 @@ fn locks_unlocks_and_relocks_a_real_program() {
     std::fs::write(&app, format!("[Desktop Entry]\nType=Application\nName=Sleepy\nExec=\"{}\" 30 %U\n", exe.display())).unwrap();
 
     let (tx, rx) = channel();
-    let watcher = Watcher::start(vec![app.clone()], move |_, a| tx.send(a).unwrap());
+    let watcher = Watcher::start(vec![app.clone()], false, move |_, a| tx.send(a).unwrap());
 
     // Launched: stopped, and the password is asked for this app.
     let mut first = Command::new(&exe).arg("30").spawn().unwrap();
