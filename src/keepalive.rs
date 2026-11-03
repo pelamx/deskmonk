@@ -148,10 +148,20 @@ pub fn hand_over() {
 
 /// Another copy holds the locks: the one this copy restarted into after an update, which sets the marker again.
 fn other_copy() -> bool {
-    use std::os::fd::AsRawFd;
-    let Some(file) = deskmonk::config_dir().and_then(|d| fs::File::open(d.join("applock.lock")).ok()) else { return false };
-    let free = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
-    !free
+    let Some(path) = deskmonk::config_dir().map(|d| d.join("applock.lock")) else { return false };
+    // Windows: that copy opened it sharing with nobody (first_copy), so opening it fails while it runs.
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        path.exists() && fs::OpenOptions::new().read(true).share_mode(0).open(&path).is_err()
+    }
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        let Ok(file) = fs::File::open(&path) else { return false };
+        let free = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
+        !free
+    }
 }
 
 /// Starts the guard for this copy.
