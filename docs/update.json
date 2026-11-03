@@ -1,8 +1,8 @@
 {
   "linux-x86_64": {
-    "sha256": "dee7cc38448bf4fdf132273a65fd62003300483e74ac12198d50459df819c8b0",
-    "url": "/downloads/update/deskMonk-0.5.9-linux-x86_64.tar.gz",
-    "version": "0.5.9"
+    "sha256": "56a09209d15c89b3bb049b9081bac578e184d5b70fd995c7d6f03e4fb8e82ffb",
+    "url": "/downloads/update/deskMonk-0.5.10-linux-x86_64.tar.gz",
+    "version": "0.5.10"
   },
   "macos": {
     "sha256": "99502f6e6ebc34f00a0ff9337099cfaf4cc1a5ed8d480067a4dc289fd3c38c60",
