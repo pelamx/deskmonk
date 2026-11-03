@@ -15,7 +15,7 @@ pub const GUARD: &str = "--guard";
 
 /// The program to start again: the AppImage itself, as the folder it runs from goes away when it quits.
 fn exe() -> Option<PathBuf> {
-    std::env::var_os("APPIMAGE").filter(|_| cfg!(target_os = "linux")).map(PathBuf::from).or_else(|| std::env::current_exe().ok())
+    std::env::var_os("APPIMAGE").filter(|_| cfg!(target_os = "linux")).map(PathBuf::from).or_else(|| Some(deskmonk::update::unold(&std::env::current_exe().ok()?)))
 }
 
 #[cfg(target_os = "macos")]
@@ -146,6 +146,14 @@ pub fn hand_over() {
     }
 }
 
+/// Another copy holds the locks: the one this copy restarted into after an update, which sets the marker again.
+fn other_copy() -> bool {
+    use std::os::fd::AsRawFd;
+    let Some(file) = deskmonk::config_dir().and_then(|d| fs::File::open(d.join("applock.lock")).ok()) else { return false };
+    let free = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
+    !free
+}
+
 /// Starts the guard for this copy.
 pub fn spawn_guard() -> Option<std::process::Child> {
     let child = std::process::Command::new(exe()?)
@@ -190,6 +198,7 @@ pub fn guard(pid: i32) -> ! {
     // At logout the session ends this process too, within this pause.
     std::thread::sleep(Duration::from_secs(2));
     if applock::stopped_while_locked()
+        && !other_copy()
         && let Some(exe) = exe()
     {
         let _ = std::process::Command::new(exe).arg(BACKGROUND).stdin(std::process::Stdio::null()).spawn();
