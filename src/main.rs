@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 #[cfg(target_os = "macos")]
 mod access;
 mod tray;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 mod keepalive;
 #[cfg(feature = "appstore")]
 mod store;
@@ -113,7 +113,7 @@ fn main() -> eframe::Result {
     {
         return unlock_prompt(app.into(), window_icon);
     }
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     if let [_, flag, pid] = &std::env::args().collect::<Vec<_>>()[..]
         && flag == keepalive::GUARD
         && let Ok(pid) = pid.parse()
