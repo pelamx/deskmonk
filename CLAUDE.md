@@ -38,6 +38,9 @@ files (`worker/src/site.ts`), and installed apps read their own platform's file 
 2. Build this platform's app from that commit, with `DESKMONK_TELEMETRY_URL=https://deskmonk.app/api/events` and
    `DESKMONK_LICENSE_URL=https://deskmonk.app` set. Mac: `packaging/macos.sh` (signed and notarized; CI's ad-hoc DMG
    never goes on the site).
+   Windows: `packaging/sign.ps1 <zip>` signs the .exe files inside the zip (and the same for the update archive's
+   contents) **before** step 3 — the sha256 in the release file must be of the signed bytes, or every self-update
+   downloads a file whose hash no longer matches and silently gives up.
 3. `packaging/publish-update.sh <platform> <version> <download> [<update archive>]` copies the files into `docs/`,
    removes this platform's previous ones, and writes and signs its release file. It needs the release key
    `~/.deskmonk-release/update-signing.key` (the same file on all three machines; never commit it).
