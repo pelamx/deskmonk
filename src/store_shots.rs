@@ -1,5 +1,5 @@
 //! Microsoft Store screenshots, drawn by the real GUI on Windows: `cargo test store_shots -- --ignored` writes
-//! `dist/store-shots/<lang>-<n>-<page>.png` at 2732×1536. Ignored by default: on Windows the settings ignore HOME,
+//! `dist/store-shots/<lang>-<n>-<page>.png` at 2732×1536 (add `--release`: a debug build scans slowly). Ignored by default: on Windows the settings ignore HOME,
 //! so it saves the language and scans a sample folder in the real profile (CI's throwaway one, in the msix job).
 
 use super::*;
@@ -9,7 +9,7 @@ use std::{fs, time::{Duration, Instant}};
 fn until(h: &mut Harness<App>, what: &str, done: impl Fn(&App) -> bool) {
     let start = Instant::now();
     while !done(h.state()) {
-        assert!(start.elapsed() < Duration::from_secs(120), "timed out: {what}");
+        assert!(start.elapsed() < Duration::from_secs(900), "timed out: {what} (status: {}, phase: {:?})", h.state().status, h.state().phase);
         h.step();
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -25,7 +25,8 @@ fn store_shots() {
     fs::create_dir_all(&out).unwrap();
 
     // Something worth showing on the Clean page: copies, an old download, a big video.
-    let home = std::env::temp_dir().join("deskMonk sample");
+    // Not in %TEMP%: the scan reads all of it as junk, and a CI runner's is large.
+    let home = PathBuf::from(std::env::var_os("USERPROFILE").expect("USERPROFILE")).join("deskMonk sample");
     let _ = fs::remove_dir_all(&home);
     for (name, fill, len) in [
         ("Pictures/holiday.jpg", 1u8, 3_400_000u64),
@@ -40,7 +41,7 @@ fn store_shots() {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, vec![fill; if len == 0 { 1024 } else { len as usize }]).unwrap();
         if len == 0 {
-            fs::File::options().write(true).open(&path).unwrap().set_len(deskmonk::scan::LARGE_FILE + 900_000_000).unwrap();
+            fs::File::options().write(true).open(&path).unwrap().set_len(deskmonk::scan::LARGE_FILE + 200_000_000).unwrap();
         }
     }
     let old = home.join("Downloads/setup-old.exe");

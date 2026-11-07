@@ -135,7 +135,7 @@ jobs:
           name: msix
           path: dist/*.msix
       # The listing's screenshots, drawn by this build on Windows (src/store_shots.rs). No stats: not an installation.
-      - run: env -u DESKMONK_TELEMETRY_URL cargo test --bin deskmonk store_shots -- --ignored
+      - run: env -u DESKMONK_TELEMETRY_URL cargo test --release --bin deskmonk store_shots -- --ignored --nocapture
         shell: bash
       - uses: actions/upload-artifact@v4
         with:
