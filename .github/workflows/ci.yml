@@ -138,6 +138,7 @@ jobs:
       - run: env -u DESKMONK_TELEMETRY_URL cargo test --release --bin deskmonk store_shots -- --ignored --nocapture
         shell: bash
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: store-shots
           path: dist/store-shots/*.png

@@ -3,13 +3,13 @@
 //! so it saves the language and scans a sample folder in the real profile (CI's throwaway one, in the msix job).
 
 use super::*;
-use egui_kittest::{Harness, kittest::Queryable};
+use egui_kittest::Harness;
 use std::{fs, time::{Duration, Instant}};
 
 fn until(h: &mut Harness<App>, what: &str, done: impl Fn(&App) -> bool) {
     let start = Instant::now();
     while !done(h.state()) {
-        assert!(start.elapsed() < Duration::from_secs(900), "timed out: {what} (status: {}, phase: {:?})", h.state().status, h.state().phase);
+        assert!(start.elapsed() < Duration::from_secs(300), "timed out: {what} (scanning: {}, status: {}, phase: {:?})", h.state().scanning.is_some(), h.state().status, h.state().phase);
         h.step();
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -52,17 +52,19 @@ fn store_shots() {
         App::default()
     });
     h.step();
+    h.step();
+    // What the window shows first, to see any dialog that would cover the shots.
+    h.render().expect("render").save(out.join("start.png")).unwrap();
+    // Called, not clicked: a click on Scan did nothing in CI's Windows run.
     h.state_mut().root = home.display().to_string();
-    h.step();
-    h.get_by_label("🔍  Scan").click();
-    h.step();
+    let ctx = h.ctx.clone();
+    h.state_mut().start_scan(ctx);
     until(&mut h, "scan", |a| a.scanning.is_none() && a.has_scanned);
 
     h.state_mut().page = Page::Map;
     h.state_mut().root = env!("CARGO_MANIFEST_DIR").to_string();
-    h.step();
-    h.get_by_label("▶ Map").click();
-    h.step();
+    let ctx = h.ctx.clone();
+    h.state_mut().start_map(ctx);
     until(&mut h, "disk map", |a| a.map_scan.is_none() && a.map.is_some());
 
     let ctx = h.ctx.clone();
