@@ -1619,19 +1619,8 @@ impl App {
                 ui.label(RichText::new(&self.pro_error).color(DANGER));
             }
         } else {
-            // One free day with PLX from pelamx.com: App lock and Vault open, cleaning keeps its daily limit.
-            if !APPSTORE && !self.plan.has_day() && let Some(url) = plan::day_pass_url() {
-                if wide_button(ui, t("🎁 PLX ile 1 gün ücretsiz dene", "🎁 Try 1 day free with PLX", "🎁 Pruebe 1 día gratis con PLX"), None) {
-                    open_url(&url);
-                }
-                ui.vertical_centered(|ui| {
-                    let note = t(
-                        "Uygulama kilidi ve Kasa 1 gün sınırsız; temizlik sınırı kalır. pelamx.com'da verilen anahtarı aşağıya yapıştırın.",
-                        "App lock and Vault unlimited for a day; cleaning keeps its limit. Paste the key pelamx.com gives you below.",
-                        "Bloqueo de apps y Caja fuerte sin límite un día; la limpieza mantiene su límite. Pegue abajo la clave que le da pelamx.com.",
-                    );
-                    ui.label(RichText::new(note).small().color(muted));
-                });
+            if !self.plan.has_day() {
+                self.day_pass_offer(ui);
                 ui.add_space(8.0);
             }
             ui.columns(2, |cols| {
@@ -1722,8 +1711,37 @@ impl App {
                     self.key_form(ui);
                 });
             }
+            ui.add_space(6.0);
+            self.day_pass_offer(ui);
         });
         ui.add_space(12.0);
+    }
+
+    /// A free day from pelamx.com (claimed with PLX): its key opens App lock and Vault without limits for a day,
+    /// while cleaning keeps the free daily limit. While a day runs, says until when instead.
+    fn day_pass_offer(&mut self, ui: &mut Ui) {
+        let Some(url) = plan::day_pass_url().filter(|_| !APPSTORE) else { return };
+        let (_, _, _, muted) = palette(ui.visuals().dark_mode);
+        if self.plan.has_day() {
+            ui.label(RichText::new(tf!(
+                "🎁 1 günlük geçiş {} tarihine kadar açık: Uygulama kilidi ve Kasa sınırsız, temizlik günde 2 GB.",
+                "🎁 Day pass on until {}: App lock and Vault unlimited, cleaning stays at 2 GB a day.",
+                "🎁 Pase de un día activo hasta el {}: Bloqueo de apps y Caja fuerte sin límite, limpieza 2 GB al día.",
+                plan::date(self.plan.day_until)
+            )).color(muted));
+            return;
+        }
+        ui.horizontal_wrapped(|ui| {
+            let claim = egui::Button::new(RichText::new(t("🎁 1 gün ücretsiz al", "🎁 Claim 1 free day", "🎁 Obtener 1 día gratis")).strong().color(Color32::WHITE)).fill(ACCENT).corner_radius(8);
+            if ui.add(claim).clicked() {
+                open_url(&url);
+            }
+            ui.label(RichText::new(t(
+                "pelamx.com'dan: 1 gün Uygulama kilidi ve Kasa sınırsız, temizlik sınırı kalır. Verilen anahtarı buraya yapıştırın.",
+                "from pelamx.com: App lock and Vault unlimited for a day, cleaning keeps its limit. Paste the key it gives you here.",
+                "de pelamx.com: Bloqueo de apps y Caja fuerte sin límite un día, la limpieza mantiene su límite. Pegue aquí la clave.",
+            )).small().color(muted));
+        });
     }
 
     /// The key field and Activate button, with the check's error below them.
