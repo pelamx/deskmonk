@@ -11,7 +11,8 @@ The Store build is the **same binary as the website build** — no feature flag,
 - **The Store signs the package.** That is the only reason to be here — a Store install shows no SmartScreen
   warning. So `packaging/msix.ps1` produces an *unsigned* .msix on purpose, and `packaging/sign.ps1` is not
   used for it.
-- **No self-update.** The app has no in-app updater, so there is nothing to switch off. The Store ships updates.
+- **The C runtime is inside the .exe** (`.cargo/config.toml`, `+crt-static`): certification refused the first
+  package for needing Visual C++ without saying so (policy 10.2.4.1).
 - **x64 only.** ARM64 Windows keeps using the zip from deskmonk.app.
 
 ## Build
@@ -57,7 +58,9 @@ it is deliberately not attached to the release, because nobody can install an un
 6. **Properties.** Category **Utilities & tools**. Support contact `support@deskmonk.app`,
    website `https://deskmonk.app`. Age rating comes from the IARC questionnaire (no ads, no user content,
    no gambling → expect 3+).
-7. **Pricing.** Free. Pro is bought in the app through Paddle, so declare the in-app offer but no Store price.
+7. **Properties → Product declarations.** Tick "This app allows users to make purchases, but does not use the
+   Microsoft Store commerce system" (Pro on Paddle; policy 10.8.2, the first submission failed without it).
+8. **Pricing.** Free. Pro is bought in the app through Paddle, so declare the in-app offer but no Store price.
    Check whether the product declarations page asks about encryption export rules; the Vault uses
    ChaCha20-Poly1305 and Argon2id from open-source libraries, and like Apple's question your answer is a legal
    statement, not a form field to guess at.
@@ -69,7 +72,8 @@ it is deliberately not attached to the release, because nobody can install an un
 3. Fill in the listing. The site copy is already written for this — reuse `docs/index.html`:
    - **Short description:** "Free up space, encrypt private files, focus better. One calm app."
    - **Description:** the "What deskMonk does" section — Clean, Vault, Monk mode, Hardware, Disk map.
-   - **Screenshots:** at least one, 1366×768 or larger.
+   - **Screenshots:** the `store-shots` artifact of the same CI run (src/store_shots.rs), one set per language.
+     Never Mac or Linux shots: certification refuses non-Windows UI (policy 10.1.1.3).
    - **Notes for certification.** Paste:
 
      > deskMonk is free, with daily limits (2 GB of cleaning, 3 Vault encryptions of up to 200 MB, 1 locked

@@ -134,6 +134,13 @@ jobs:
         with:
           name: msix
           path: dist/*.msix
+      # The listing's screenshots, drawn by this build on Windows (src/store_shots.rs). No stats: not an installation.
+      - run: env -u DESKMONK_TELEMETRY_URL cargo test --bin deskmonk store_shots -- --ignored
+        shell: bash
+      - uses: actions/upload-artifact@v4
+        with:
+          name: store-shots
+          path: dist/store-shots/*.png
 
   # Static terminal UI: runs on any Linux of that CPU (servers, cloud images).
   tui-musl:

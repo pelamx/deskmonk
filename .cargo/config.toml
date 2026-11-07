@@ -1,0 +1,7 @@
+# The C runtime inside the .exe: Windows without the Visual C++ Redistributable runs deskMonk too, and the
+# Microsoft Store refuses an app that needs software it doesn't name (policy 10.2.4.1).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

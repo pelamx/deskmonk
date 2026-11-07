@@ -60,6 +60,8 @@ const NEON: [Color32; 8] = [
 // On Windows the settings and the Recycle Bin ignore HOME, so the test could reach the real ones.
 #[cfg(all(test, unix))]
 mod gui_tests;
+#[cfg(all(test, windows))]
+mod store_shots;
 
 /// The AppImage installs nothing, and a Wayland dock or taskbar shows an app's icon only through a .desktop file named
 /// after its app id, so the AppImage would sit there without one. It adds its own launcher and icon, kept pointing at

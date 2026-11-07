@@ -77,3 +77,8 @@ strip = false
 [dev-dependencies]
 # Runs the real GUI invisibly and clicks its widgets, without touching the keyboard or mouse (src/gui_tests.rs).
 egui_kittest = { version = "0.35", default-features = false, features = ["eframe"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+# Store screenshots drawn by the real GUI on Windows (src/store_shots.rs): wgpu draws them, image writes the PNGs.
+egui_kittest = { version = "0.35", default-features = false, features = ["eframe", "wgpu"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
