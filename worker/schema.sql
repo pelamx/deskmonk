@@ -19,6 +19,12 @@ CREATE TABLE IF NOT EXISTS subscriptions(
 CREATE INDEX IF NOT EXISTS subscriptions_install ON subscriptions(install_id);
 CREATE INDEX IF NOT EXISTS subscriptions_txn ON subscriptions(txn);
 CREATE INDEX IF NOT EXISTS subscriptions_ref ON subscriptions(ref);
+-- plx (src/plx.ts): Pro paid in USDC on Solana. reference: the Solana Pay reference key the payment carries;
+-- amount in USDC base units (6 decimals); signature: the paying transaction, once found (one transaction pays one invoice).
+CREATE TABLE IF NOT EXISTS plx_invoices(ref TEXT PRIMARY KEY, reference TEXT NOT NULL, plan TEXT NOT NULL, amount INTEGER NOT NULL,
+    install_id TEXT, email TEXT, license_key TEXT, created_at INTEGER NOT NULL, checked_at INTEGER NOT NULL DEFAULT 0,
+    signature TEXT UNIQUE, paid_at INTEGER);
+CREATE INDEX IF NOT EXISTS plx_invoices_open ON plx_invoices(created_at) WHERE signature IS NULL;
 CREATE TABLE IF NOT EXISTS activations(license_key TEXT NOT NULL, install_id TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY(license_key, install_id));
 -- Installations the operator marked as their own: listed, but left out of every count.
 CREATE TABLE IF NOT EXISTS ignored_installs(install_id TEXT PRIMARY KEY, ts INTEGER NOT NULL);

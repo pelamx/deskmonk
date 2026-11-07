@@ -134,7 +134,7 @@ async function manage(env: Env, form: FormData, action: string): Promise<Respons
   const id = String(form.get("id") ?? "").trim();
   const sub = await db.prepare("SELECT * FROM subscriptions WHERE id = ?1").bind(id).first<Row>();
   if (sub === null) return html(await dashboard(env, "", { error: "That subscription no longer exists." }));
-  const paddle = sub.customer_id !== "manual";
+  const paddle = sub.customer_id !== "manual" && sub.customer_id !== "plx";
   let message: string;
   switch (action) {
     case "extend": {
@@ -164,6 +164,7 @@ async function manage(env: Env, form: FormData, action: string): Promise<Respons
       break;
     }
     case "refund": {
+      if (sub.customer_id === "plx") return html(await dashboard(env, id, { error: `Paid with plx: send the USDC back from your wallet (transaction ${sub.txn ?? "?"}), then use End now.` }));
       if (!paddle) return html(await dashboard(env, id, { error: "Issued by hand: nothing was paid, so there is nothing to refund. Use End now." }));
       const reason = String(form.get("reason") ?? "").trim().slice(0, 200) || "Refund requested by the customer";
       const result = await refundLast(env, id, reason);
@@ -601,7 +602,8 @@ async function dashboard(env: Env, query: string, notice: Notice): Promise<strin
           <input id="q" type="text" name="q" value="${esc(query)}" placeholder="DM-XXXX-XXXX-XXXX" spellcheck="false" autocomplete="off"></div>
         <button type="submit">Search</button>${query ? `<a class="btn-link" href="/admin#subscriptions">Clear</a>` : ""}
       </form>
-      ${subGroup("Paddle", "paddle", matches.filter((s) => s.customer_id !== "manual"), t, !!query)}
+      ${subGroup("Paddle", "paddle", matches.filter((s) => s.customer_id !== "manual" && s.customer_id !== "plx"), t, !!query)}
+      ${subGroup("plx (USDC)", "paddle", matches.filter((s) => s.customer_id === "plx"), t, !!query)}
       ${subGroup("Issued by hand", "manual", matches.filter((s) => s.customer_id === "manual"), t, !!query)}
       <p class="muted foot">Refund (under Manage) gives back a subscription's last payment and cancels it; Paddle's webhook updates this list. App Store and Google Play
         subscriptions belong to Apple and Google and appear only in the counts above (Pro installs on those versions).</p>
@@ -980,7 +982,7 @@ function actions(s: Row): string {
     <form method="post" action="/admin/extend" class="inline">${id}<input type="number" name="days" min="1" max="3650" value="30" aria-label="Days"><button>Extend days</button></form>
     <form method="post" action="/admin/devices" class="inline" ${confirm("Free all device slots of this key?")}>${id}<button class="quiet">Free devices</button></form>
     <form method="post" action="/admin/rotate" class="inline" ${confirm("Make a new key? The old key stops working on every computer.")}>${id}<button class="quiet">New key</button></form>
-    ${s.customer_id !== "manual" ? `<form method="post" action="/admin/refund" class="inline" ${confirm("Refund the last payment in full, cancel the subscription and end Pro now? The money goes back to the buyer.")}>${id}<input type="text" name="reason" maxlength="200" placeholder="Reason (for Paddle)" aria-label="Refund reason"><button class="danger">Refund</button></form>` : ""}
+    ${s.customer_id !== "manual" && s.customer_id !== "plx" ? `<form method="post" action="/admin/refund" class="inline" ${confirm("Refund the last payment in full, cancel the subscription and end Pro now? The money goes back to the buyer.")}>${id}<input type="text" name="reason" maxlength="200" placeholder="Reason (for Paddle)" aria-label="Refund reason"><button class="danger">Refund</button></form>` : ""}
     <form method="post" action="/admin/end" class="inline" ${confirm("End Pro now for this subscription?")}>${id}<button class="quiet">End now</button></form>
     <form method="post" action="/admin/delete" class="inline" ${confirm("Delete this subscription and its key for good?")}>${id}<button class="danger">Delete</button></form>
   </div>`;

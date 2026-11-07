@@ -4,6 +4,7 @@
 //! GET  /welcome?ref=<ref>                        after paying: waits for the webhook, then shows the license key
 //! GET  /account, POST /account {key}             a license's plan, status, end date and devices
 //! POST /account/portal {key}                     → Paddle's page to cancel or change the card
+//! GET  /plx?ref=<ref>                            the plx (USDC) payment page is in plx.ts
 
 import { esc } from "./admin";
 import { LANG_NAMES, LANGS, RTL, USD, money, words, type Lang } from "./i18n";
@@ -121,6 +122,10 @@ export interface BuyOptions {
   token: string;
   sandbox: boolean;
   prices: { monthly: string; yearly: string };
+  /** The "Pay with plx" button (USDC on Solana, plx.ts). */
+  plx: boolean;
+  /** A plx license key to extend ("Renew" on /account), or "". */
+  key: string;
   /** A real two-letter country from Cloudflare, or null (XX = unknown, T1 = Tor are not countries). */
   country: string | null;
 }
@@ -145,14 +150,25 @@ export function buyPage(req: Request, lang: Lang, o: BuyOptions): Response {
     <label class="field" for="email">${s.email}</label>
     <input id="email" type="email" required autocomplete="email" placeholder="${esc(s.emailPh)}">
     <button id="pay" type="button">${s.pay}</button>
+    ${o.plx ? `<button id="plx" type="button" class="quiet">${s.plxPay}</button><p class="muted" style="margin:8px 0 0;text-align:center">${s.plxNote}</p>` : ""}
     <div class="trust"><span>${s.trust1}</span><span>${s.trust2}</span><span>${s.trust3}</span></div>
   </section>
   <p class="muted fineprint">${s.fine}</p>
   <script src="https://cdn.paddle.com/paddle/v2/paddle.js"></script>
   <script>
-  const c = ${js({ token: o.token, sandbox: o.sandbox, prices: o.prices, install: o.install, country: o.country, locale: PADDLE_LOCALE[lang] ?? null, failed: s.failed, welcome: `${origin}/welcome?lang=${lang}&ref=` })};
+  const c = ${js({ key: o.key, plx: `/plx?lang=${lang}`, token: o.token, sandbox: o.sandbox, prices: o.prices, install: o.install, country: o.country, locale: PADDLE_LOCALE[lang] ?? null, failed: s.failed, welcome: `${origin}/welcome?lang=${lang}&ref=` })};
   for (const input of document.querySelectorAll('.plan input')) input.addEventListener('change', () => {
     for (const p of document.querySelectorAll('.plan')) p.classList.toggle('on', p.contains(document.querySelector('.plan input:checked')));
+  });
+  // plx: a plain form post; the server makes the invoice and shows its QR code. The email is optional there.
+  document.getElementById('plx')?.addEventListener('click', () => {
+    const email = document.getElementById('email');
+    if (email.value && !email.reportValidity()) return;
+    const f = document.createElement('form');
+    f.method = 'post'; f.action = c.plx;
+    const fields = { cycle: document.querySelector('.plan input:checked').value, email: email.value, install: c.install, key: c.key };
+    for (const [name, value] of Object.entries(fields)) { const i = document.createElement('input'); i.type = 'hidden'; i.name = name; i.value = value; f.append(i); }
+    document.body.append(f); f.submit();
   });
   if (c.sandbox) Paddle.Environment.set('sandbox');
   Paddle.Initialize({ token: c.token });
@@ -229,6 +245,8 @@ export interface AccountView {
   maxDevices: number;
   /** Paddle subscription (not one issued by hand): the portal can manage it. */
   paddle: boolean;
+  /** Paid with plx: renewed by paying again. */
+  plx: boolean;
 }
 
 export function accountPage(req: Request, lang: Lang, view: AccountView | null, error = ""): Response {
@@ -252,7 +270,10 @@ export function accountPage(req: Request, lang: Lang, view: AccountView | null, 
   const manage = view.paddle
     ? `<form method="post" action="/account/portal?lang=${lang}"><input type="hidden" name="key" value="${esc(view.key)}">
        <button type="submit">${s.manage}</button></form><p class="muted" style="margin-top:8px;text-align:center">${s.manageNote}</p>`
-    : "";
+    : view.plx
+      ? `<a href="/buy?lang=${lang}&plan=${view.plan === "yearly" ? "yearly" : "monthly"}&key=${encodeURIComponent(view.key)}"><button type="button">${s.plxRenew}</button></a>
+         <p class="muted" style="margin-top:8px;text-align:center">${s.plxRenewNote}</p>`
+      : "";
   return page(
     req,
     lang,

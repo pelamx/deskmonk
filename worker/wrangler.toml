@@ -24,9 +24,9 @@ binding = "DB"
 database_name = "deskmonk"
 database_id = "e0bfa82a-e5c0-4b68-ade8-4c5fad7b1af2"
 
-# Monday 08:00 UTC: the weekly summary mail (src/mail.ts).
+# Monday 08:00 UTC: the weekly summary mail (src/mail.ts). Every minute: looks for plx payments whose page was closed (src/plx.ts).
 [triggers]
-crons = ["0 8 * * 1"]
+crons = ["0 8 * * 1", "* * * * *"]
 
 # Secret, not here: ADMIN_TOKEN (wrangler secret put ADMIN_TOKEN), the /admin password for user "admin".
 
@@ -38,6 +38,9 @@ crons = ["0 8 * * 1"]
 PADDLE_ENV = "production"
 PADDLE_PRICE_MONTHLY = "pri_01m655mbyt5f86ptdtqpsggdza"
 PADDLE_PRICE_YEARLY = "pri_01m655nmwqf9t6zj9bakdepxb8"
+
+# plx (src/plx.ts): the Solana wallet that receives USDC. Empty = no "Pay with plx" button. Optional secret PLX_RPC: a Solana RPC URL.
+PLX_WALLET = ""
 
 # Mail through Resend (src/mail.ts): the buyer's license key, the app's contact form, the weekly summary.
 # deskmonk.app must be verified in Resend. Secret, not here: RESEND_API_KEY. Without it nothing is mailed.

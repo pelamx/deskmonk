@@ -3,12 +3,13 @@
 //! every path without a file there comes here:
 //! POST /api/events        ← apps send JSON events here
 //! /admin…                 the operator's panel (admin.ts)
-//! Pro licenses (Paddle):  license.ts
+//! Pro licenses (Paddle):  license.ts; paid in USDC on Solana: plx.ts
 
 import { handleAdmin } from "./admin";
 import { handleLicense, type LicenseEnv } from "./license";
 import { handleMail, weekly } from "./mail";
 import { countryOf } from "./i18n";
+import { sweepInvoices } from "./plx";
 import { handleSite } from "./site";
 
 export interface Env extends LicenseEnv {
@@ -62,8 +63,9 @@ export default {
     return (await handleAdmin(req, env, path)) ?? new Response(null, { status: 404 });
   },
 
-  async scheduled(_event: ScheduledController, env: Env): Promise<void> {
-    await weekly(env);
+  async scheduled(event: ScheduledController, env: Env): Promise<void> {
+    if (event.cron === "* * * * *") await sweepInvoices(env);
+    else await weekly(env);
   },
 } satisfies ExportedHandler<Env>;
 

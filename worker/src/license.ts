@@ -9,6 +9,7 @@
 //! POST /api/license/deactivate {key, install_id} → {ok}; frees one of the key's computers ("Remove from this computer")
 //! GET  /day-pass, POST /checkout/day-pass      a free day claimed on pelamx.com with PLX: redirect / {ref, url} to pelamx's claim page
 //! POST /api/plx-balance/callback               pelamx's signed call: issues the day key (App Lock + Vault, cleaning stays limited)
+//! POST /plx, GET /plx?ref=                     paying in USDC on Solana instead of Paddle (plx.ts)
 
 export interface LicenseEnv extends MailEnv {
   DB: D1Database;
@@ -20,10 +21,14 @@ export interface LicenseEnv extends MailEnv {
   PADDLE_PRICE_YEARLY?: string;
   /** Shared HMAC secret with pelamx.com (its PARTNER_DM_SECRET); unset = no day pass. */
   PARTNER_DM_SECRET?: string;
+  /** plx (plx.ts): the Solana wallet USDC payments go to; unset = no plx option. PLX_RPC: a Solana RPC URL (secret). */
+  PLX_WALLET?: string;
+  PLX_RPC?: string;
 }
 
 import { keyMail, sendMail, type MailEnv } from "./mail";
 import { accountPage, buyPage, pickLang, t, welcomePage } from "./pages";
+import { checkInvoice, createInvoice, invoicePage, plxConfigured } from "./plx";
 
 export const MAX_DEVICES = 3;
 /** Webhooks older than this are refused (replays). */
@@ -52,7 +57,9 @@ export async function handleLicense(req: Request, env: LicenseEnv, path: string)
     return json({ ref: new URL(url).searchParams.get("order"), url });
   }
   if (req.method === "POST" && path === "/api/plx-balance/callback") return dayPassCallback(req, env);
-  if (req.method === "GET" && path.startsWith("/api/order/")) return order(env.DB, path.slice("/api/order/".length));
+  if (req.method === "GET" && path.startsWith("/api/order/")) return order(env, path.slice("/api/order/".length));
+  if (req.method === "POST" && path === "/plx") return createInvoice(req, env, KEY, INSTALL_ID);
+  if (read && path === "/plx") return invoicePage(req, env, pickLang(req));
   if (path === "/account" && (read || req.method === "POST")) return account(req, env);
   if (req.method === "POST" && path === "/account/portal") return accountPortal(req, env);
   if (req.method === "POST" && path === "/api/paddle") return webhook(req, env);
@@ -337,7 +344,7 @@ export async function refundLast(env: LicenseEnv, subId: string, reason: string)
 /** Paddle's customer-portal page for the subscription of `key`, or null (unknown key, issued by hand, or Paddle failed). */
 async function portalUrl(env: LicenseEnv, key: string): Promise<string | null> {
   const sub = await env.DB.prepare("SELECT id, customer_id FROM subscriptions WHERE license_key = ?1").bind(key).first<{ id: string; customer_id: string }>();
-  if (sub === null || sub.customer_id === "manual" || sub.customer_id === "pelamx" || !env.PADDLE_API_KEY) return null;
+  if (sub === null || sub.customer_id === "manual" || sub.customer_id === "pelamx" || sub.customer_id === "plx" || !env.PADDLE_API_KEY) return null;
   try {
     const res = await fetch(`${paddleApi(env)}/customers/${encodeURIComponent(sub.customer_id)}/portal-sessions`, {
       method: "POST",
@@ -359,6 +366,9 @@ function buy(req: Request, env: LicenseEnv): Response {
   const country = (req as { cf?: { country?: unknown } }).cf?.country;
   return buyPage(req, pickLang(req), {
     configured: !!(env.PADDLE_CLIENT_TOKEN && env.PADDLE_PRICE_MONTHLY && env.PADDLE_PRICE_YEARLY),
+    plx: plxConfigured(env),
+    // "Renew" on /account: the plx payment extends this key.
+    key: KEY.test(url.searchParams.get("key") ?? "") ? url.searchParams.get("key")! : "",
     plan: url.searchParams.get("plan") === "yearly" ? "yearly" : "monthly",
     install,
     token: env.PADDLE_CLIENT_TOKEN ?? "",
@@ -368,9 +378,18 @@ function buy(req: Request, env: LicenseEnv): Response {
   });
 }
 
-async function order(db: D1Database, ref: string): Promise<Response> {
+async function order(env: LicenseEnv, ref: string): Promise<Response> {
   if (!REF.test(ref)) return json({ error: "bad_request" }, 400);
-  const sub = await db
+  // A plx invoice: looks on the chain for its payment; a renewal shows the key it extended.
+  const inv = await checkInvoice(env, ref);
+  if (inv !== null) {
+    const res = inv.signature !== null && inv.license_key !== null && Date.now() / 1000 - inv.created_at < ORDER_REVEAL
+      ? json({ status: "paid", key: inv.license_key, plan: inv.plan })
+      : json({ status: "pending" });
+    res.headers.set("Cache-Control", "no-store");
+    return res;
+  }
+  const sub = await env.DB
     .prepare("SELECT license_key, plan FROM subscriptions WHERE ref = ?1 AND created_at >= ?2")
     .bind(ref, Math.floor(Date.now() / 1000) - ORDER_REVEAL)
     .first<{ license_key: string; plan: string | null }>();
@@ -413,7 +432,8 @@ async function account(req: Request, env: LicenseEnv): Promise<Response> {
     periodEnd: sub.period_end,
     devices: sub.devices,
     maxDevices: MAX_DEVICES,
-    paddle: sub.customer_id !== "manual",
+    paddle: sub.customer_id !== "manual" && sub.customer_id !== "plx",
+    plx: sub.customer_id === "plx",
   });
 }
 

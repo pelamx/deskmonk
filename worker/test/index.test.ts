@@ -5,6 +5,7 @@ import { handleLicense, inCidr, mayActivate, plxSignatureOk, refundLast, newKey,
 import { handleMail, keyMail, weekNumbers, weeklyText } from "../src/mail";
 import { buyPage, js, pickLang } from "../src/pages";
 import { LANGS, USD, money, word } from "../src/i18n";
+import { base58, payUrl, received, USDC_MINT } from "../src/plx";
 import { adsScript, downloadLabel, platformOf, sourceOf } from "../src/site";
 
 test("validates events the way server/ does", () => {
@@ -225,8 +226,8 @@ function memoryDb(): any {
     const run = (args: unknown[]) => ({
       first: async () => db.prepare(sql).get(...args) ?? null,
       all: async () => ({ results: db.prepare(sql).all(...args) }),
-      run: async () => db.prepare(sql).run(...args),
-      raw: async () => db.prepare(sql).all(...args).map((r: any) => Object.values(r)),
+      run: async () => ({ meta: { changes: Number(db.prepare(sql).run(...args).changes) } }),
+      raw: async () => db.prepare(sql).all(...args).map((r: object) => Object.values(r)),
     });
     return { bind: (...args: unknown[]) => run(args), ...run([]) };
   };
@@ -432,4 +433,89 @@ test("one computer counts once: copies that send its machine id share it, with t
   await ev("phone"); // apps that send no machine id keep their own
   expect((await db.prepare("SELECT COUNT(DISTINCT install_id) AS n FROM events").first()).n).toBe(2);
   expect(() => parseEvent(`{"install_id":"a","machine":"NOT-HEX","version":"1","os":"macos","client":"gui","kind":"open"}`)).toThrow("invalid machine");
+});
+
+test("plx: base58, the Solana Pay link, and what a transaction paid", () => {
+  expect(base58(new Uint8Array(32))).toBe("11111111111111111111111111111111");
+  expect(base58(new Uint8Array([0, 0, 1]))).toBe("112");
+  expect(payUrl("W1", 2_500_000, "R1", "monthly")).toBe(`solana:W1?amount=2.5&spl-token=${USDC_MINT}&reference=R1&label=deskMonk&message=deskMonk%20Pro%20monthly`);
+  const bal = (i: number, owner: string, amount: string, mint = USDC_MINT) => ({ accountIndex: i, mint, owner, uiTokenAmount: { amount } });
+  const tx = (err: unknown, pre: unknown[], post: unknown[]) => ({ meta: { err, preTokenBalances: pre, postTokenBalances: post } });
+  expect(received(tx(null, [bal(1, "W", "1000000"), bal(2, "payer", "9000000")], [bal(1, "W", "3500000"), bal(2, "payer", "6500000")]), "W")).toBe(2_500_000n);
+  expect(received(tx(null, [], [bal(1, "W", "2500000")]), "W")).toBe(2_500_000n); // the wallet's USDC account was made by this payment
+  expect(received(tx(null, [], [bal(1, "W", "2500000", "FakeMint")]), "W")).toBe(0n);
+  expect(received(tx({ InstructionError: [0, "x"] }, [], [bal(1, "W", "2500000")]), "W")).toBe(0n);
+  expect(received(null, "W")).toBe(0n);
+});
+
+test("plx: an invoice turns Pro once paid on the chain, a second payment extends the same key, a transaction pays once", async () => {
+  const wallet = "So11111111111111111111111111111111111111112";
+  const env = { DB: memoryDb(), PLX_WALLET: wallet, PLX_RPC: "https://rpc.test" } as any;
+  const payments: Record<string, { sig: string; units: string }> = {}; // reference → its transaction
+  const real = globalThis.fetch;
+  globalThis.fetch = (async (_url: string, init: RequestInit) => {
+    const { method, params } = JSON.parse(String(init.body));
+    if (method === "getSignaturesForAddress") {
+      const p = payments[params[0]];
+      return Response.json({ result: p ? [{ signature: p.sig, err: null }] : [] });
+    }
+    expect(params[1].maxSupportedTransactionVersion).toBe(1); // mainnet has version 1 transactions
+    const p = Object.values(payments).find((x) => x.sig === params[0])!;
+    return Response.json({ result: { meta: { err: null, preTokenBalances: [], postTokenBalances: [{ accountIndex: 1, mint: USDC_MINT, owner: wallet, uiTokenAmount: { amount: p.units } }] } } });
+  }) as typeof fetch;
+  const invoice = async (fields: Record<string, string>) => {
+    const res = await handleLicense(new Request("https://deskmonk.app/plx", { method: "POST", body: new URLSearchParams(fields) }), env, "/plx");
+    expect(res!.status).toBe(303);
+    const ref = new URL(res!.headers.get("Location")!).searchParams.get("ref")!;
+    const inv = await env.DB.prepare("SELECT * FROM plx_invoices WHERE ref = ?1").bind(ref).first();
+    return { ref, reference: inv.reference as string };
+  };
+  const order = async (ref: string) => (await handleLicense(new Request(`https://deskmonk.app/api/order/${ref}`), env, `/api/order/${ref}`))!.json() as Promise<any>;
+  try {
+    expect((await handleLicense(new Request("https://deskmonk.app/plx", { method: "POST", body: new URLSearchParams({ install: "bad id!" }) }), env, "/plx"))!.status).toBe(400);
+    const a = await invoice({ cycle: "monthly", install: "mac-1" });
+    expect(await order(a.ref)).toEqual({ status: "pending" });
+    payments[a.reference] = { sig: "sigA", units: "2499999" }; // one unit short
+    env.DB.exec(`UPDATE plx_invoices SET checked_at = 0`);
+    expect(await order(a.ref)).toEqual({ status: "pending" });
+    payments[a.reference] = { sig: "sigA", units: "2500000" };
+    env.DB.exec(`UPDATE plx_invoices SET checked_at = 0`);
+    const paid = await order(a.ref);
+    expect(paid).toMatchObject({ status: "paid", plan: "monthly" });
+    const sub = await env.DB.prepare("SELECT * FROM subscriptions WHERE license_key = ?1").bind(paid.key).first();
+    expect(sub).toMatchObject({ customer_id: "plx", install_id: "mac-1", txn: "sigA", status: "active" });
+    const firstEnd = sub.period_end as number;
+    expect(firstEnd - Date.now() / 1000).toBeGreaterThan(29 * 86400);
+    // The app on that computer: Pro, by its install id alone.
+    const v = await handleLicense(new Request("https://deskmonk.app/api/license/validate", { method: "POST", body: JSON.stringify({ key: "", install_id: "mac-1" }) }), env, "/api/license/validate");
+    expect(await v!.json()).toEqual({ key: paid.key, pro_until: firstEnd });
+
+    // Renewing from /account with the key: a year on top of the month, same key.
+    const b = await invoice({ cycle: "yearly", key: paid.key });
+    payments[b.reference] = { sig: "sigB", units: "25000000" };
+    expect(await order(b.ref)).toMatchObject({ status: "paid", key: paid.key, plan: "yearly" });
+    const renewed = await env.DB.prepare("SELECT period_end, plan FROM subscriptions WHERE license_key = ?1").bind(paid.key).first();
+    expect(renewed).toEqual({ period_end: firstEnd + 365 * 86400, plan: "yearly" });
+
+    // One transaction carrying a second invoice's reference too pays only the first.
+    const c = await invoice({ cycle: "monthly" });
+    payments[c.reference] = { sig: "sigB", units: "25000000" };
+    expect(await order(c.ref)).toEqual({ status: "pending" });
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM subscriptions").first()).n).toBe(1);
+
+    // The pages: the plx button on /buy (only with a wallet set), the QR page, Renew on /account instead of Paddle's portal.
+    Object.assign(env, { PADDLE_CLIENT_TOKEN: "t", PADDLE_PRICE_MONTHLY: "m", PADDLE_PRICE_YEARLY: "y" });
+    const get = async (path: string) => (await handleLicense(new Request(`https://deskmonk.app${path}`), env, path.split("?")[0]))!;
+    expect(await (await get("/buy?install=mac-1")).text()).toContain('id="plx"');
+    expect(await (await get(`/plx?ref=${c.ref}`)).text()).toContain(`reference=${c.reference}`);
+    expect((await get(`/plx?ref=${a.ref}`)).headers.get("Location")).toContain(`/welcome?lang=en&ref=${a.ref}`);
+    const acct = await handleLicense(new Request("https://deskmonk.app/account", { method: "POST", body: new URLSearchParams({ key: paid.key }) }), env, "/account");
+    const html = await acct!.text();
+    expect(html).toContain(`key=${paid.key}`);
+    expect(html).not.toContain("/account/portal");
+    env.PLX_WALLET = "";
+    expect(await (await get("/buy")).text()).not.toContain('id="plx"');
+  } finally {
+    globalThis.fetch = real;
+  }
 });
