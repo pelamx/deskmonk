@@ -349,7 +349,8 @@ async function dashboard(env: Env, query: string, notice: Notice): Promise<strin
   const monthly = livePaddle.filter((s) => s.plan !== "yearly").length;
   const yearly = livePaddle.filter((s) => s.plan === "yearly").length;
   const mrr = monthly * PRICE.monthly + (yearly * PRICE.yearly) / 12;
-  const ending = subsAll.filter((s) => live(s) && s.period_end <= t + 7 * DAY);
+  // A free day (customer "pelamx") always ends within a day: not a renewal to watch.
+  const ending = subsAll.filter((s) => live(s) && s.period_end <= t + 7 * DAY && s.customer_id !== "pelamx");
   const newPaddle = (from: number, to = Infinity) => paddleSubs.filter((s) => (s.created_at ?? 0) >= from && (s.created_at ?? 0) < to).length;
   const bought = featureAll("bought");
   const storeToday = sum(bought, "today");
@@ -443,7 +444,7 @@ async function dashboard(env: Env, query: string, notice: Notice): Promise<strin
       ${tile({ icon: "download", tone: "t-blue", title: "Installs ever seen", value: sum(installs, "total"), rows: osBars(byPlatform(installs, "total")),
         foot: `${sum(active, "month")} active this month`, footIcon: "chart" })}
       ${tile({ icon: "clock", tone: "t-orange", title: "Ending in 7 days", value: ending.length, cls: ending.length ? "alert" : "",
-        rows: bars3([["Paddle", ending.filter((s) => s.customer_id !== "manual").length, "web"], ["Manual", ending.filter((s) => s.customer_id === "manual").length, "manual"]]),
+        rows: bars3([["Paddle", ending.filter((s) => s.customer_id !== "manual" && s.customer_id !== "plx").length, "web"], ["USDC", ending.filter((s) => s.customer_id === "plx").length, "web"], ["Manual", ending.filter((s) => s.customer_id === "manual").length, "manual"]]),
         foot: `${paddleSubs.filter((s) => s.status === "past_due").length} payment problems (past due)`, footIcon: "card" })}
     </div>
     <p class="label" style="margin-top:20px">New installs, last 14 days</p>
