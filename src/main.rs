@@ -29,6 +29,23 @@ mod keepalive;
 #[cfg(feature = "appstore")]
 mod store;
 
+/// App Review refuses private APIs (guideline 2.5.1, the reason 0.5.3 was rejected). winit's macOS `set_blur`, which
+/// deskMonk never calls, links these two from CoreGraphics; defined here, the binary no longer imports them, and the
+/// stripped App Store binary keeps neither name.
+#[cfg(all(target_os = "macos", feature = "appstore"))]
+#[allow(non_snake_case)]
+mod no_private_api {
+    use std::ffi::c_void;
+    #[unsafe(no_mangle)]
+    extern "C" fn CGSMainConnectionID() -> *mut c_void {
+        std::ptr::null_mut()
+    }
+    #[unsafe(no_mangle)]
+    extern "C" fn CGSSetWindowBackgroundBlurRadius(_connection: *mut c_void, _window: isize, _radius: i64) -> i32 {
+        0
+    }
+}
+
 /// Mac App Store build: sandboxed, Pro through Apple, no App Lock.
 const APPSTORE: bool = cfg!(feature = "appstore");
 const APPLE_EULA: &str = "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/";

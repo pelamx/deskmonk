@@ -19,6 +19,8 @@ case $MODE in
     WORK=dist/appstore
     # Own target folder, so the App Store binary never replaces the regular one in target/release.
     export CARGO_TARGET_DIR=target/appstore
+    # No symbol names left in the binary: App Review scans it for private API names (src/main.rs, no_private_api).
+    export CARGO_PROFILE_RELEASE_STRIP=symbols
     # Upload builds only, so local sandbox tests send no stats; without it the admin panel gets nothing from App Store users.
     if [ "$MODE" = appstore ]; then export DESKMONK_TELEMETRY_URL=${DESKMONK_TELEMETRY_URL:-https://deskmonk.app/api/events}; fi
     # Full Xcode, not the Command Line Tools: only its Swift back-deployment libraries include Intel (x86_64).
@@ -37,6 +39,10 @@ done
 APP=$WORK/out/deskMonk.app
 rm -rf "$WORK" && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$WORK/icon.iconset"
 lipo -create -output "$APP/Contents/MacOS/deskmonk" "$TARGET_DIR"/{aarch64,x86_64}-apple-darwin/release/deskmonk
+# App Review rejects a binary that names a private API (0.5.3 was, for winit's _CGSSetWindowBackgroundBlurRadius).
+if [ "$MODE" != dmg ] && strings -a "$APP/Contents/MacOS/deskmonk" | grep -E 'CGSSetWindowBackgroundBlurRadius|CGSMainConnectionID' >&2; then
+  echo "private API name in the App Store binary (see no_private_api in src/main.rs)" >&2; exit 1
+fi
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@BUILD@/$BUILD/g" -e "s/@MINOS@/$MINOS/g" packaging/Info.plist > "$APP/Contents/Info.plist"
 # Every icon size from the 1024 px Dock icon (padded to Apple's icon grid).
 for size in 16 32 128 256 512; do
