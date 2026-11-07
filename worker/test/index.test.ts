@@ -296,6 +296,18 @@ test("Pro now counts only paying customers, not your own computers or manual gra
   expect(page).toMatch(/Pro now<small>[^<]*<\/small><\/p><\/div>\s*<div class="v">1<\/div>/);
 });
 
+test("the Today row counts website visits", async () => {
+  (crypto.subtle as any).timingSafeEqual ??= (a: Uint8Array, b: Uint8Array) => a.every((x, i) => x === b[i]); // Workers-only API
+  const env = { DB: memoryDb(), ADMIN_TOKEN: "test" } as any;
+  const now = Math.floor(Date.now() / 1000);
+  env.DB.exec(`INSERT INTO visits(ts, kind, source) VALUES (${now}, 'visit', 'google'), (${now}, 'visit', 'direct'),
+    (${now}, 'download', 'google'), (${now - 100 * 86400}, 'visit', 'direct')`);
+  const res = await handleAdmin(new Request("https://deskmonk.app/admin", { headers: { Authorization: `Basic ${btoa("admin:test")}` } }), env, "/admin");
+  const page = await res!.text();
+  expect(page).toMatch(/Website visits<small>[^<]*<\/small><\/p><\/div>\s*<div class="v">2<\/div>/);
+  expect(page).toContain("1 downloads today · 2 visits in 7 days · 2 in 30 · 3 ever");
+});
+
 test("removing a computer frees its place, also on the computer it was bought on", async () => {
   const env = { DB: memoryDb() };
   env.DB.exec(`INSERT INTO subscriptions(id, customer_id, status, period_end, license_key, install_id, event_at, plan)

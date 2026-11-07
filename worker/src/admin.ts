@@ -319,9 +319,14 @@ async function dashboard(env: Env, query: string, notice: Notice): Promise<strin
     db.prepare(`WITH ${EV} SELECT ${local("ts")} AS d, os, type, COUNT(DISTINCT install_id) AS n FROM ev WHERE ts >= ?1 GROUP BY 1, 2, 3`).bind(today - 29 * DAY),
     db.prepare(`SELECT source, SUM(kind = 'visit') AS visits, SUM(kind = 'download') AS downloads, SUM(kind = 'visit' AND ts >= ?2) AS today
                 FROM visits WHERE ts >= ?1 GROUP BY source ORDER BY visits + downloads DESC LIMIT 40`).bind(month, today),
+    db.prepare(`SELECT SUM(kind = 'visit' AND ts >= ?1) AS today, SUM(kind = 'visit' AND ts >= ?2 AND ts < ?1) AS yesterday,
+                  SUM(kind = 'visit' AND ts >= ?3) AS week, SUM(kind = 'visit' AND ts >= ?4) AS month, SUM(kind = 'visit') AS total,
+                  SUM(kind = 'download' AND ts >= ?1) AS downloads FROM visits`).bind(today, yesterday, week, month),
   ]);
-  const [installs, active, series, plans, features, countries, space, versions, clients, brands, daily, subsAll, log, countryDevices, spaceDevices, dailyDevices, sources] =
+  const [installs, active, series, plans, features, countries, space, versions, clients, brands, daily, subsAll, log, countryDevices, spaceDevices, dailyDevices, sources, [visitRow]] =
     results.map((r) => (r.results ?? []) as Row[]);
+  // SUM over no rows is NULL.
+  const visits = Object.fromEntries(["today", "yesterday", "week", "month", "total", "downloads"].map((k) => [k, Number(visitRow?.[k]) || 0]));
   const users = await usersQuery(db, month, 500);
   const [mobileNow, mobile] = await Promise.all([mobileLiveData(db, t), mobileData(db, t)]);
 
@@ -418,6 +423,10 @@ async function dashboard(env: Env, query: string, notice: Notice): Promise<strin
       ${tile({ icon: "cart", tone: "t-red", title: "New Pro customers", hint: "Paddle + app stores",
         value: newPaddle(today) + storeToday, extra: delta(newPaddle(today) + storeToday, newPaddle(yesterday, today) + storeYesterday),
         rows: bars3([["Paddle", newPaddle(today), "web"], ...storeBars(bought, "today")]) })}
+      ${tile({ icon: "globe", tone: "t-violet", title: "Website visits", hint: "deskmonk.app, bots left out",
+        value: visits.today, extra: delta(visits.today, visits.yesterday),
+        rows: bars3(sources.filter((r) => r.today).slice(0, 3).map((r): [string, number, string] => [esc(r.source), r.today, "web"])),
+        foot: `${visits.downloads} downloads today · ${visits.week} visits in 7 days · ${visits.month} in 30 · ${visits.total} ever`, footIcon: "chart" })}
     </div>
     ${places(countries)}
   </section>
