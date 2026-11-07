@@ -7,6 +7,8 @@
 //! POST /api/license/validate {key, install_id} → {key, pro_until}; a key works on up to MAX_DEVICES installations
 //! POST /api/license/portal {key}               → {url} of Paddle's page to cancel or change the subscription
 //! POST /api/license/deactivate {key, install_id} → {ok}; frees one of the key's computers ("Remove from this computer")
+//! GET  /day-pass, POST /checkout/day-pass      a free day claimed on pelamx.com with PLX: redirect / {ref, url} to pelamx's claim page
+//! POST /api/plx-balance/callback               pelamx's signed call: issues the day key (App Lock + Vault, cleaning stays limited)
 
 export interface LicenseEnv extends MailEnv {
   DB: D1Database;
@@ -16,6 +18,8 @@ export interface LicenseEnv extends MailEnv {
   PADDLE_WEBHOOK_SECRET?: string;
   PADDLE_PRICE_MONTHLY?: string;
   PADDLE_PRICE_YEARLY?: string;
+  /** Shared HMAC secret with pelamx.com (its PARTNER_DM_SECRET); unset = no day pass. */
+  PARTNER_DM_SECRET?: string;
 }
 
 import { keyMail, sendMail, type MailEnv } from "./mail";
@@ -41,6 +45,13 @@ export async function handleLicense(req: Request, env: LicenseEnv, path: string)
     const ref = new URL(req.url).searchParams.get("ref") ?? "";
     return REF.test(ref) ? welcomePage(req, pickLang(req), ref) : Response.redirect(new URL("/buy", req.url).toString(), 302);
   }
+  if (read && path === "/day-pass") return env.PARTNER_DM_SECRET ? Response.redirect(dayPassClaimUrl(), 302) : Response.redirect(new URL("/buy", req.url).toString(), 302);
+  if (req.method === "POST" && path === "/checkout/day-pass") {
+    if (!env.PARTNER_DM_SECRET) return json({ error: "not_configured" }, 503);
+    const url = dayPassClaimUrl();
+    return json({ ref: new URL(url).searchParams.get("order"), url });
+  }
+  if (req.method === "POST" && path === "/api/plx-balance/callback") return dayPassCallback(req, env);
   if (req.method === "GET" && path.startsWith("/api/order/")) return order(env.DB, path.slice("/api/order/".length));
   if (path === "/account" && (read || req.method === "POST")) return account(req, env);
   if (req.method === "POST" && path === "/account/portal") return accountPortal(req, env);
@@ -202,14 +213,15 @@ async function webhook(req: Request, env: LicenseEnv): Promise<Response> {
 }
 
 async function validate(db: D1Database, key: string, install: string): Promise<Response> {
+  type Sub = { license_key: string; period_end: number; plan: string | null };
   const sub =
     key !== ""
-      ? await db.prepare("SELECT license_key, period_end FROM subscriptions WHERE license_key = ?1").bind(key).first<{ license_key: string; period_end: number }>()
+      ? await db.prepare("SELECT license_key, period_end, plan FROM subscriptions WHERE license_key = ?1").bind(key).first<Sub>()
       : // No key yet: a purchase made from this installation (the app checks right after the checkout).
         await db
-          .prepare("SELECT license_key, period_end FROM subscriptions WHERE install_id = ?1 ORDER BY period_end DESC LIMIT 1")
+          .prepare("SELECT license_key, period_end, plan FROM subscriptions WHERE install_id = ?1 ORDER BY period_end DESC LIMIT 1")
           .bind(install)
-          .first<{ license_key: string; period_end: number }>();
+          .first<Sub>();
   if (sub === null) return key !== "" ? json({ error: "unknown_key" }, 404) : json({ key: "", pro_until: 0 });
   const devices = (await db.prepare("SELECT install_id FROM activations WHERE license_key = ?1").bind(sub.license_key).raw<[string]>()).map(([id]) => id);
   if (!mayActivate(devices, install)) return json({ error: "too_many_devices" }, 403);
@@ -219,7 +231,50 @@ async function validate(db: D1Database, key: string, install: string): Promise<R
       .bind(sub.license_key, install, Math.floor(Date.now() / 1000))
       .run();
   }
+  // A day key is not Pro: apps before the day pass read pro_until only, so they treat it as the free plan.
+  if (sub.plan === "day") return json({ key: sub.license_key, pro_until: 0, day_until: sub.period_end });
   return json({ key: sub.license_key, pro_until: sub.period_end });
+}
+
+/** pelamx.com's claim page for a new day-pass order. */
+function dayPassClaimUrl(): string {
+  const ref = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `https://pelamx.com/claim?app=deskmonk&order=${ref}&return=${encodeURIComponent("https://deskmonk.app/")}`;
+}
+
+/** pelamx's signed callback after a free day was claimed there: issues a 24-hour day key, once per order. pelamx keeps
+ *  one key per account, so this is reached once per account. */
+async function dayPassCallback(req: Request, env: LicenseEnv): Promise<Response> {
+  const raw = await req.text();
+  const secret = env.PARTNER_DM_SECRET ?? "";
+  if (secret === "" || raw.length > 2048 || !(await plxSignatureOk(raw, req.headers.get("x-plx-signature") ?? "", secret))) {
+    return json({ error: "bad_signature" }, 401);
+  }
+  let p: any;
+  try {
+    p = JSON.parse(raw);
+  } catch {
+    return json({ error: "bad_request" }, 400);
+  }
+  if (p?.plan !== "day_pass" || typeof p.order !== "string" || !REF.test(p.order)) return json({ error: "bad_request" }, 400);
+  const id = `pelamx_${p.order}`;
+  const at = Math.floor(Date.now() / 1000);
+  await env.DB.prepare(
+    `INSERT OR IGNORE INTO subscriptions(id, customer_id, status, period_end, license_key, install_id, txn, event_at, plan, created_at, email, ref)
+     VALUES (?1, 'pelamx', 'active', ?2, ?3, NULL, NULL, ?4, 'day', ?5, ?6, ?7)`,
+  )
+    .bind(id, at + 86400, newKey(), new Date(at * 1000).toISOString(), at, typeof p.user === "string" ? p.user.slice(0, 254) : null, p.order)
+    .run();
+  const row = await env.DB.prepare("SELECT license_key, period_end FROM subscriptions WHERE id = ?1").bind(id).first<{ license_key: string; period_end: number }>();
+  return row === null ? json({ error: "not_issued" }, 500) : json({ licence_key: row.license_key, expires_at: row.period_end });
+}
+
+/** pelamx signs the raw body: hex HMAC-SHA256 with the shared secret, in `x-plx-signature`. */
+export async function plxSignatureOk(body: string, given: string, secret: string): Promise<boolean> {
+  const enc = new TextEncoder();
+  const hmacKey = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const hex = [...new Uint8Array(await crypto.subtle.sign("HMAC", hmacKey, enc.encode(body)))].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return given.length === hex.length && [...given].reduce((acc, c, i) => acc | (c.charCodeAt(0) ^ hex.charCodeAt(i)), 0) === 0;
 }
 
 /** "monthly"/"yearly" when the subscription is for one of deskMonk's prices, else null. */
@@ -282,7 +337,7 @@ export async function refundLast(env: LicenseEnv, subId: string, reason: string)
 /** Paddle's customer-portal page for the subscription of `key`, or null (unknown key, issued by hand, or Paddle failed). */
 async function portalUrl(env: LicenseEnv, key: string): Promise<string | null> {
   const sub = await env.DB.prepare("SELECT id, customer_id FROM subscriptions WHERE license_key = ?1").bind(key).first<{ id: string; customer_id: string }>();
-  if (sub === null || sub.customer_id === "manual" || !env.PADDLE_API_KEY) return null;
+  if (sub === null || sub.customer_id === "manual" || sub.customer_id === "pelamx" || !env.PADDLE_API_KEY) return null;
   try {
     const res = await fetch(`${paddleApi(env)}/customers/${encodeURIComponent(sub.customer_id)}/portal-sessions`, {
       method: "POST",

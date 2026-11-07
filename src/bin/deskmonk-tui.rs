@@ -69,9 +69,9 @@ fn main() -> io::Result<()> {
     let mut plan = Plan::load();
     // The paid period ran out: the subscription may have renewed. Asked only then, so offline starts stay instant.
     if plan::URL.is_some() && !plan.key.is_empty() && !plan.is_pro()
-        && let Ok((key, until)) = plan::validate(&plan.key, &telemetry.install_id)
+        && let Ok((key, until, day)) = plan::validate(&plan.key, &telemetry.install_id)
     {
-        plan.set_license(key, until);
+        plan.set_license(key, until, day);
     }
     let (tx, update_check) = channel();
     std::thread::spawn(move || {
@@ -110,8 +110,11 @@ impl App {
     /// p: checks a typed key with the license server, like the desktop app's "Activate". Blocks the screen while it asks.
     fn activate_key(&mut self, key: &str) {
         self.status = match plan::validate(key, &self.telemetry.install_id) {
-            Ok((key, until)) if until > 0 => {
-                self.plan.set_license(key, until);
+            Ok((key, until, day)) if until > 0 || day > 0 => {
+                self.plan.set_license(key, until, day);
+                if until == 0 {
+                    return self.status = day_pass_note(day);
+                }
                 let date = plan::date(until);
                 tf!("Pro açık, {date} tarihine kadar.", "Pro is on until {date}.", "Pro activo hasta el {date}.")
             }
@@ -523,8 +526,12 @@ fn activate(key: &str) -> ! {
         fail(t("Kullanım: deskmonk-tui --key ANAHTAR", "Usage: deskmonk-tui --key KEY", "Uso: deskmonk-tui --key CLAVE").into());
     }
     match plan::validate(key, &Telemetry::load().install_id) {
-        Ok((key, until)) if until > 0 => {
-            Plan::load().set_license(key, until);
+        Ok((key, until, day)) if until > 0 || day > 0 => {
+            Plan::load().set_license(key, until, day);
+            if until == 0 {
+                println!("{}", day_pass_note(day));
+                std::process::exit(0)
+            }
             let date = plan::date(until);
             println!("{}", tf!("Pro açık, {date} tarihine kadar.", "Pro is on until {date}.", "Pro activo hasta el {date}."));
             std::process::exit(0)
@@ -532,4 +539,14 @@ fn activate(key: &str) -> ! {
         Ok(_) => fail(t("Bu anahtarın etkin bir aboneliği yok", "This key has no active subscription", "Esta clave no tiene una suscripción activa").into()),
         Err(e) => fail(e),
     }
+}
+
+/// What a day key from pelamx.com turns on.
+fn day_pass_note(day: u64) -> String {
+    let date = plan::date(day);
+    tf!(
+        "1 günlük geçiş açık, {date} tarihine kadar: uygulama kilidi ve kasa sınırsız, temizlik günde 2 GB.",
+        "Day pass on until {date}: app lock and vault unlimited, cleaning 2 GB a day.",
+        "Pase de un día activo hasta el {date}: bloqueo de apps y caja fuerte sin límite, limpieza 2 GB al día."
+    )
 }

@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { compareVersions, esc, handleAdmin, hardwareHtml, humanSize, mobileCard, mobileLive, worldMap } from "../src/admin";
 import { insert, parseEvent } from "../src/index";
-import { handleLicense, inCidr, mayActivate, refundLast, newKey, periodEnd, planOf, verifySignature } from "../src/license";
+import { handleLicense, inCidr, mayActivate, plxSignatureOk, refundLast, newKey, periodEnd, planOf, verifySignature } from "../src/license";
 import { handleMail, keyMail, weekNumbers, weeklyText } from "../src/mail";
 import { buyPage, js, pickLang } from "../src/pages";
 import { LANGS, USD, money, word } from "../src/i18n";
@@ -226,6 +226,7 @@ function memoryDb(): any {
       first: async () => db.prepare(sql).get(...args) ?? null,
       all: async () => ({ results: db.prepare(sql).all(...args) }),
       run: async () => db.prepare(sql).run(...args),
+      raw: async () => db.prepare(sql).all(...args).map((r: any) => Object.values(r)),
     });
     return { bind: (...args: unknown[]) => run(args), ...run([]) };
   };
@@ -308,6 +309,31 @@ test("removing a computer frees its place, also on the computer it was bought on
   // The buying computer's next start (no key, only its id) must not take the place back.
   expect(await (await post("/api/license/validate", { key: "", install_id: "buyer" }))!.json()).toEqual({ key: "", pro_until: 0 });
   expect((await post("/api/license/deactivate", { key: "", install_id: "buyer" }))!.status).toBe(404);
+});
+
+test("pelamx day pass: signed callback issues one day key, old apps read it as free", async () => {
+  const env = { DB: memoryDb(), PARTNER_DM_SECRET: "s3cret" } as any;
+  const order = "0123456789abcdef0123456789abcdef";
+  const body = JSON.stringify({ order, user: "a@b.co", app_id: "deskmonk", plan: "day_pass", charge_ref: "daypass:deskmonk:a@b.co" });
+  const sig = async (b: string) => {
+    const k = await crypto.subtle.importKey("raw", new TextEncoder().encode("s3cret"), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    return [...new Uint8Array(await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(b)))].map((x) => x.toString(16).padStart(2, "0")).join("");
+  };
+  const call = async (b: string, s: string) =>
+    handleLicense(new Request("https://deskmonk.app/api/plx-balance/callback", { method: "POST", body: b, headers: { "x-plx-signature": s } }), env, "/api/plx-balance/callback");
+  expect(await plxSignatureOk(body, await sig(body), "s3cret")).toBe(true);
+  expect((await call(body, "00" + (await sig(body)).slice(2)))!.status).toBe(401);
+  expect((await call(body.replace("day_pass", "pro_yearly"), await sig(body.replace("day_pass", "pro_yearly"))))!.status).toBe(400);
+  const first: any = await (await call(body, await sig(body)))!.json();
+  expect(first.licence_key).toMatch(/^DM(-[A-HJ-NP-Z2-9]{4}){3}$/);
+  expect(first.expires_at - Math.floor(Date.now() / 1000)).toBeGreaterThan(86000);
+  // A retry of the same order returns the same key, never a second one.
+  expect(((await (await call(body, await sig(body)))!.json()) as any).licence_key).toBe(first.licence_key);
+  const v: any = await (await handleLicense(new Request("https://deskmonk.app/api/license/validate", { method: "POST", body: JSON.stringify({ key: first.licence_key, install_id: "pc1" }) }), env, "/api/license/validate"))!.json();
+  expect(v).toEqual({ key: first.licence_key, pro_until: 0, day_until: first.expires_at });
+  // The claim link goes to pelamx with a fresh order.
+  const r = (await handleLicense(new Request("https://deskmonk.app/day-pass"), env, "/day-pass"))!;
+  expect(r.headers.get("location")).toMatch(/^https:\/\/pelamx\.com\/claim\?app=deskmonk&order=[0-9a-f]{32}&return=/);
 });
 
 test("refund: the last completed payment in full, then cancel at once", async () => {

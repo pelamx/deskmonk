@@ -116,7 +116,7 @@ export async function weekNumbers(db: D1Database, now: number) {
     .bind(since)
     .all<{ os: string; n: number }>()).results;
   const subs = await one<{ fresh: number; monthly: number; yearly: number; canceled: number }>(
-    `SELECT SUM(created_at >= ?1 AND customer_id != 'manual') AS fresh,
+    `SELECT SUM(created_at >= ?1 AND customer_id NOT IN ('manual', 'pelamx')) AS fresh,
        SUM(status IN ('active', 'trialing', 'past_due') AND plan = 'monthly' AND customer_id != 'manual') AS monthly,
        SUM(status IN ('active', 'trialing', 'past_due') AND plan = 'yearly' AND customer_id != 'manual') AS yearly,
        SUM(status = 'canceled' AND period_end >= ?1) AS canceled

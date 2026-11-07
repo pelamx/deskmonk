@@ -25,12 +25,14 @@ pub const FREE_LOCKED_APPS: usize = 1;
 /// Pro keeps working this long past the paid period, e.g. offline or while a renewal goes through.
 const GRACE: u64 = 7 * 86400;
 
-/// File format: key, pro_until, day, cleaned bytes, vault count; one per line.
+/// File format: key, pro_until, day, cleaned bytes, vault count, day_until; one per line.
 #[derive(Default, Debug, PartialEq)]
 pub struct Plan {
     pub key: String,
     /// End of the paid period (unix seconds); 0 = never paid.
     pub pro_until: u64,
+    /// End of a day pass claimed on pelamx.com (unix seconds); 0 = none. It opens App Lock and Vault, not cleaning.
+    pub day_until: u64,
     day: String,
     cleaned: u64,
     vaults: u32,
@@ -55,13 +57,14 @@ impl Plan {
             day: next(),
             cleaned: next().parse().unwrap_or(0),
             vaults: next().parse().unwrap_or(0),
+            day_until: next().parse().unwrap_or(0),
         }
     }
 
     fn save(&self) {
         let Some(path) = path() else { return };
         let _ = fs::create_dir_all(path.parent().unwrap());
-        let _ = fs::write(&path, format!("{}\n{}\n{}\n{}\n{}\n", self.key, self.pro_until, self.day, self.cleaned, self.vaults));
+        let _ = fs::write(&path, format!("{}\n{}\n{}\n{}\n{}\n{}\n", self.key, self.pro_until, self.day, self.cleaned, self.vaults, self.day_until));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -77,10 +80,20 @@ impl Plan {
         self.pro_until > 0 && now <= self.pro_until + GRACE
     }
 
+    /// A day pass is running (no grace: it is one day).
+    pub fn has_day(&self) -> bool {
+        now() < self.day_until
+    }
+
+    /// Pro, or a day pass: App Lock and Vault without limits. Cleaning asks `is_pro` alone.
+    pub fn unlocked(&self) -> bool {
+        self.is_pro() || self.has_day()
+    }
+
     /// Starts a new day's counts when the date changed.
     fn roll(&mut self, day: String) {
         if self.day != day {
-            *self = Self { key: std::mem::take(&mut self.key), pro_until: self.pro_until, day, ..Default::default() };
+            *self = Self { key: std::mem::take(&mut self.key), pro_until: self.pro_until, day_until: self.day_until, day, ..Default::default() };
         }
     }
 
@@ -101,7 +114,7 @@ impl Plan {
 
     /// Encryptions the free plan may still do today; None = unlimited.
     pub fn vaults_left(&mut self) -> Option<u32> {
-        if self.is_pro() {
+        if self.unlocked() {
             return None;
         }
         self.roll(today());
@@ -115,13 +128,14 @@ impl Plan {
     }
 
     pub fn can_lock_more(&self, locked: usize) -> bool {
-        self.is_pro() || locked < FREE_LOCKED_APPS
+        self.unlocked() || locked < FREE_LOCKED_APPS
     }
 
     /// Stores what the license server answered.
-    pub fn set_license(&mut self, key: String, pro_until: u64) {
+    pub fn set_license(&mut self, key: String, pro_until: u64, day_until: u64) {
         self.key = key;
         self.pro_until = pro_until;
+        self.day_until = day_until;
         self.save();
     }
 }
@@ -139,10 +153,11 @@ pub fn vault_too_big(size: u64) -> String {
 }
 
 /// Asks the license server about `key` (or, with no key, a purchase made from this installation).
-/// Returns the key to keep and the end of the paid period (0 = not Pro).
-pub fn validate(key: &str, install_id: &str) -> Result<(String, u64), String> {
+/// Returns the key to keep, the end of the paid period (0 = not Pro) and the end of a day pass (0 = none).
+pub fn validate(key: &str, install_id: &str) -> Result<(String, u64, u64), String> {
     let v = post("/api/license/validate", serde_json::json!({ "key": key, "install_id": install_id }))?;
-    Ok((v["key"].as_str().unwrap_or(key).to_string(), unexpired(v["pro_until"].as_u64().unwrap_or(0), now())))
+    let day = v["day_until"].as_u64().unwrap_or(0);
+    Ok((v["key"].as_str().unwrap_or(key).to_string(), unexpired(v["pro_until"].as_u64().unwrap_or(0), now()), if day > now() { day } else { 0 }))
 }
 
 /// `until`, or 0 when the paid period and its grace time are over, so a lapsed key reads as not Pro.
@@ -159,6 +174,11 @@ pub fn portal_url(key: &str) -> Result<String, String> {
 /// Checkout page for this installation; `yearly` picks the plan.
 pub fn buy_url(install_id: &str, yearly: bool) -> Option<String> {
     Some(format!("{}/buy?install={install_id}&plan={}", URL?, if yearly { "yearly" } else { "monthly" }))
+}
+
+/// pelamx.com's page for claiming one free day with PLX; it shows a key to paste here.
+pub fn day_pass_url() -> Option<String> {
+    Some(format!("{}/day-pass", URL?))
 }
 
 /// Frees this computer's place on `key` (one of 3), so the key can be used on another computer.
@@ -274,6 +294,20 @@ mod tests {
         plan.roll("2026-10-29".into());
         assert_eq!((plan.cleaned, plan.vaults), (FREE_CLEAN, 2));
         plan.roll("2026-10-30".into());
-        assert_eq!(plan, Plan { key: "k".into(), pro_until: 1000, day: "2026-10-30".into(), cleaned: 0, vaults: 0 });
+        assert_eq!(plan, Plan { key: "k".into(), pro_until: 1000, day_until: 0, day: "2026-10-30".into(), cleaned: 0, vaults: 0 });
+    }
+
+    #[test]
+    fn day_pass_opens_lock_and_vault_but_not_cleaning() {
+        let mut plan = Plan { pro_until: 0, day_until: now() + 3600, ..Default::default() };
+        if URL.is_none() {
+            return; // dev builds are Pro everywhere
+        }
+        assert!(plan.has_day() && !plan.is_pro());
+        assert_eq!(plan.vaults_left(), None);
+        assert!(plan.can_lock_more(10));
+        assert!(plan.clean_left().is_some());
+        plan.day_until = now() - 1;
+        assert!(!plan.has_day() && !plan.can_lock_more(FREE_LOCKED_APPS));
     }
 }

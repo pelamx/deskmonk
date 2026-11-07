@@ -598,7 +598,7 @@ struct App {
     pro_key: String,
     pro_manual: bool,
     pro_error: String,
-    pro_check: Option<Receiver<Result<(String, u64), String>>>,
+    pro_check: Option<Receiver<Result<(String, u64, u64), String>>>,
     /// When the last license check started; negative = not yet.
     pro_checked: f64,
     /// App Store build: localized prices (monthly, yearly) and whether a purchase sheet is open.
@@ -1421,7 +1421,7 @@ impl App {
         #[cfg(feature = "appstore")]
         for event in store::take() {
             match event {
-                store::Event::ProUntil(until) => self.plan.set_license(String::new(), until),
+                store::Event::ProUntil(until) => self.plan.set_license(String::new(), until, 0),
                 store::Event::Prices(monthly, yearly) => self.store_prices = (monthly, yearly),
                 store::Event::Bought => {
                     self.store_busy = false;
@@ -1449,13 +1449,13 @@ impl App {
             self.pro_check = None;
             let manual = std::mem::take(&mut self.pro_manual);
             match result {
-                Ok((key, until)) => {
-                    if manual && until == 0 {
+                Ok((key, until, day)) => {
+                    if manual && until == 0 && day == 0 {
                         self.pro_error = t("Bu anahtarın etkin bir aboneliği yok", "This key has no active subscription", "Esta clave no tiene una suscripción activa").into();
                     } else if manual || !key.is_empty() || self.plan.key.is_empty() {
-                        self.plan.set_license(key, until);
+                        self.plan.set_license(key, until, day);
                     }
-                    if self.plan.is_pro() {
+                    if self.plan.unlocked() {
                         self.pro_waiting = None;
                         self.pro_key.clear();
                     }
@@ -1523,6 +1523,13 @@ impl App {
                 tf!("Pro etkin · {} tarihine kadar", "Pro is active · until {}", "Pro activo · hasta {}", plan::date(self.plan.pro_until))
             } else if pro {
                 t("Pro etkin", "Pro is active", "Pro activo").into()
+            } else if self.plan.has_day() {
+                tf!(
+                    "1 günlük geçiş etkin · {} tarihine kadar · Uygulama kilidi ve Kasa sınırsız, temizlik günde 2 GB",
+                    "Day pass active · until {} · App lock and Vault unlimited, cleaning 2 GB a day",
+                    "Pase de un día activo · hasta {} · Bloqueo de apps y Caja fuerte sin límite, limpieza 2 GB al día",
+                    plan::date(self.plan.day_until)
+                )
             } else {
                 t("Sınırları kaldırın, deskMonk'u destekleyin.", "Remove the limits and support deskMonk.", "Quite los límites y apoye a deskMonk.").into()
             };
@@ -1551,7 +1558,7 @@ impl App {
             ),
             (
                 "🔒",
-                if pro { t("Uygulama kilidi", "App lock", "Bloqueo de apps") } else { t("Uygulama kilidi: 1 uygulama", "App lock: 1 app", "Bloqueo de apps: 1 app") }.into(),
+                if self.plan.unlocked() { t("Uygulama kilidi", "App lock", "Bloqueo de apps") } else { t("Uygulama kilidi: 1 uygulama", "App lock: 1 app", "Bloqueo de apps: 1 app") }.into(),
                 t("istediğiniz kadar", "as many as you like", "todas las que quiera"),
             ),
         ];
@@ -1603,7 +1610,7 @@ impl App {
                     "Libera uno de los 3 ordenadores de la clave; este vuelve al plan gratuito.",
                 )).clicked() {
                     match plan::deactivate(&self.plan.key, &self.telemetry.install_id) {
-                        Ok(()) => self.plan.set_license(String::new(), 0),
+                        Ok(()) => self.plan.set_license(String::new(), 0, 0),
                         Err(e) => self.pro_error = e,
                     }
                 }
@@ -1612,6 +1619,21 @@ impl App {
                 ui.label(RichText::new(&self.pro_error).color(DANGER));
             }
         } else {
+            // One free day with PLX from pelamx.com: App lock and Vault open, cleaning keeps its daily limit.
+            if !APPSTORE && !self.plan.has_day() && let Some(url) = plan::day_pass_url() {
+                if wide_button(ui, t("🎁 PLX ile 1 gün ücretsiz dene", "🎁 Try 1 day free with PLX", "🎁 Pruebe 1 día gratis con PLX"), None) {
+                    open_url(&url);
+                }
+                ui.vertical_centered(|ui| {
+                    let note = t(
+                        "Uygulama kilidi ve Kasa 1 gün sınırsız; temizlik sınırı kalır. pelamx.com'da verilen anahtarı aşağıya yapıştırın.",
+                        "App lock and Vault unlimited for a day; cleaning keeps its limit. Paste the key pelamx.com gives you below.",
+                        "Bloqueo de apps y Caja fuerte sin límite un día; la limpieza mantiene su límite. Pegue abajo la clave que le da pelamx.com.",
+                    );
+                    ui.label(RichText::new(note).small().color(muted));
+                });
+                ui.add_space(8.0);
+            }
             ui.columns(2, |cols| {
                 for (col, yearly) in cols.iter_mut().zip([false, true]) {
                     // The App Store shows its own localized price; the website build shows the Paddle price.
@@ -1931,7 +1953,7 @@ impl App {
         let (done, total) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
         let (tx, rx) = channel();
         let (d, n) = (done.clone(), total.clone());
-        let max = (!self.plan.is_pro()).then_some(plan::FREE_VAULT_SIZE);
+        let max = (!self.plan.unlocked()).then_some(plan::FREE_VAULT_SIZE);
         std::thread::spawn(move || {
             let size = vault::work_size(&src);
             // Encrypting reads the new vault back once, so it counts twice.

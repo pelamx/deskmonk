@@ -334,7 +334,7 @@ async function dashboard(env: Env, query: string, notice: Notice): Promise<strin
   const live = (s: Row) => s.period_end > t && s.status !== "canceled";
   // Paying customers only: a subscription on a computer marked "This is me", or under the email of one, is yours.
   const ownEmails = new Set(subsAll.filter((s) => s.mine && s.email).map((s) => s.email));
-  const paddleSubs = subsAll.filter((s) => s.customer_id !== "manual" && !s.mine && !ownEmails.has(s.email));
+  const paddleSubs = subsAll.filter((s) => s.customer_id !== "manual" && s.customer_id !== "pelamx" && !s.mine && !ownEmails.has(s.email));
   const livePaddle = paddleSubs.filter(live);
   const appstorePro = plans.filter((p) => p.channel === "appstore" && p.plan === "pro").reduce((a, p) => a + p.n, 0);
   const playstorePro = plans.filter((p) => p.channel === "playstore" && p.plan === "pro").reduce((a, p) => a + p.n, 0);
