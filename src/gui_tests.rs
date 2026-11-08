@@ -308,6 +308,14 @@ fn the_app_works() {
             h.step();
         }
     }
+    // An entered key comes off this computer with one click, also with no server to tell.
+    h.state_mut().plan.set_license("DM-TEST-TEST-TEST".into(), u64::MAX / 2, 0);
+    h.state_mut().page = Page::License;
+    h.step();
+    h.step();
+    click(&mut h, "Remove license key");
+    assert!(h.state().plan.key.is_empty() && h.state().plan.pro_until == 0, "the key is gone");
+    assert!(h.query_all_by_label("Remove license key").next().is_none());
     tx.send(tray::Action::Quit).unwrap();
     h.step();
     assert!(h.state().quitting, "Quit from the menu bar quits");

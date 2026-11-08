@@ -1494,6 +1494,22 @@ impl App {
         }
     }
 
+    /// Like bubbleTranslate: the key leaves this computer at once, also offline; the server frees its place
+    /// (one of 3) when it hears. A license check still running would bring the key back, so it is dropped.
+    fn remove_license(&mut self) {
+        let (key, id) = (std::mem::take(&mut self.plan.key), self.telemetry.install_id.clone());
+        std::thread::spawn(move || {
+            if let Err(e) = plan::deactivate(&key, &id) {
+                eprintln!("deactivate: {e}");
+            }
+        });
+        self.plan.set_license(String::new(), 0, 0);
+        self.pro_check = None;
+        self.pro_manual = false;
+        self.pro_key.clear();
+        self.pro_error.clear();
+    }
+
     fn check_license(&mut self, ctx: &egui::Context, key: String, manual: bool) {
         self.pro_checked = ctx.input(|i| i.time);
         self.pro_manual = manual;
@@ -1596,23 +1612,17 @@ impl App {
             ui.add_space(6.0);
         }
         ui.add_space(8.0);
-        if pro {
-            if APPSTORE {
-                if wide_button(ui, t("Aboneliği yönet", "Manage subscription", "Gestionar suscripción"), Some(ACCENT)) {
-                    open_url("https://apps.apple.com/account/subscriptions");
+        // Any entered key (Pro, a day pass, a lapsed one) is shown to copy and can be taken off this computer.
+        if !APPSTORE && !self.plan.key.is_empty() {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(t("Lisans anahtarınız:", "Your license key:", "Su clave de licencia:")).color(muted));
+                ui.label(RichText::new(&self.plan.key).monospace().strong());
+                if ui.small_button(t("Kopyala", "Copy", "Copiar")).clicked() {
+                    ui.ctx().copy_text(self.plan.key.clone());
                 }
-            } else if !self.plan.key.is_empty() {
-                // The key turns Pro on on up to 3 computers, so it is shown here to copy.
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(t("Lisans anahtarınız:", "Your license key:", "Su clave de licencia:")).color(muted));
-                    ui.label(RichText::new(&self.plan.key).monospace().strong());
-                    if ui.small_button(t("Kopyala", "Copy", "Copiar")).clicked() {
-                        ui.ctx().copy_text(self.plan.key.clone());
-                    }
-                });
-                ui.add_space(6.0);
-            }
-            if !APPSTORE && !self.plan.key.is_empty() && wide_button(ui, t("Aboneliği yönet", "Manage subscription", "Gestionar suscripción"), Some(ACCENT)) {
+            });
+            ui.add_space(6.0);
+            if pro && wide_button(ui, t("Aboneliği yönet", "Manage subscription", "Gestionar suscripción"), Some(ACCENT)) {
                 let key = self.plan.key.clone();
                 // shortcut: a failed portal request is only logged; the app shows nothing.
                 std::thread::spawn(move || match plan::portal_url(&key) {
@@ -1620,19 +1630,20 @@ impl App {
                     Err(e) => eprintln!("portal: {e}"),
                 });
             }
-            // Like bubbleTranslate: frees one of the key's 3 computers for another one.
-            if !APPSTORE && !self.plan.key.is_empty() {
-                let remove = ui.add_sized([ui.available_width(), 32.0], egui::Button::new(t("Bu bilgisayardan kaldır", "Remove from this computer", "Quitar de este ordenador")).frame(false));
-                if remove.on_hover_text(t(
-                    "Anahtarın 3 bilgisayarlık yerinden birini boşaltır; bu bilgisayar Ücretsiz plana döner.",
-                    "Frees one of the key's 3 computers; this computer goes back to the Free plan.",
-                    "Libera uno de los 3 ordenadores de la clave; este vuelve al plan gratuito.",
-                )).clicked() {
-                    match plan::deactivate(&self.plan.key, &self.telemetry.install_id) {
-                        Ok(()) => self.plan.set_license(String::new(), 0, 0),
-                        Err(e) => self.pro_error = e,
-                    }
-                }
+            ui.add_space(4.0);
+            let remove = egui::Button::new(RichText::new(t("Lisans anahtarını kaldır", "Remove license key", "Quitar la clave de licencia")).size(15.0)).corner_radius(10);
+            if ui.add_sized([ui.available_width(), 36.0], remove).on_hover_text(t(
+                "Anahtarı bu bilgisayardan siler ve 3 bilgisayarlık yerinden birini boşaltır; bu bilgisayar Ücretsiz plana döner.",
+                "Takes the key off this computer and frees one of its 3 computers; this computer goes back to the Free plan.",
+                "Quita la clave de este ordenador y libera uno de sus 3 ordenadores; este vuelve al plan gratuito.",
+            )).clicked() {
+                self.remove_license();
+            }
+            ui.add_space(8.0);
+        }
+        if pro {
+            if APPSTORE && wide_button(ui, t("Aboneliği yönet", "Manage subscription", "Gestionar suscripción"), Some(ACCENT)) {
+                open_url("https://apps.apple.com/account/subscriptions");
             }
             if !self.pro_error.is_empty() {
                 ui.label(RichText::new(&self.pro_error).color(DANGER));
