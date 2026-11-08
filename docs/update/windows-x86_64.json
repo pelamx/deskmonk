@@ -1,9 +1,9 @@
 {
   "windows-x86_64": {
-    "download": "/downloads/deskMonk-0.5.14-windows-x86_64.zip",
-    "sha256": "3de4aaab2a5a94182af69dfa2422f306711d83a520634e607fd59f626d567e86",
-    "size": 9802883,
-    "url": "/downloads/update/deskMonk-0.5.14-windows-x86_64.tar.gz",
-    "version": "0.5.14"
+    "download": "/downloads/deskMonk-0.5.15-windows-x86_64.zip",
+    "sha256": "3abde31cb18247469a8e1e363b0f3accc811f91f1d1e5248cf48cc3c8c1fb944",
+    "size": 9977533,
+    "url": "/downloads/update/deskMonk-0.5.15-windows-x86_64.tar.gz",
+    "version": "0.5.15"
   }
 }
