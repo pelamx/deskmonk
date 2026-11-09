@@ -8,7 +8,8 @@
 //! POST /api/license/portal {key}               → {url} of Paddle's page to cancel or change the subscription
 //! POST /api/license/deactivate {key, install_id} → {ok}; frees one of the key's computers ("Remove from this computer")
 //! GET  /day-pass, POST /checkout/day-pass      a free day claimed on pelamx.com with PLX: redirect / {ref, url} to pelamx's claim page
-//! POST /api/plx-balance/callback               pelamx's signed call: issues the day key (App Lock + Vault, cleaning stays limited)
+//! POST /api/plx-balance/callback               pelamx's signed call: a day key (App Lock + Vault, cleaning stays limited),
+//!                                              or Pro paid with PLX (pro_monthly / pro_yearly, one key per account)
 //! POST /plx, GET /plx?ref=                     paying in USDC on Solana instead of Paddle (plx.ts)
 
 export interface LicenseEnv extends MailEnv {
@@ -263,9 +264,11 @@ async function dayPassCallback(req: Request, env: LicenseEnv): Promise<Response>
   } catch {
     return json({ error: "bad_request" }, 400);
   }
-  if (p?.plan !== "day_pass" || typeof p.order !== "string" || !REF.test(p.order)) return json({ error: "bad_request" }, 400);
-  const id = `pelamx_${p.order}`;
+  const paid = PELAMX_PLANS[p?.plan as string];
+  if ((p?.plan !== "day_pass" && !paid) || typeof p.order !== "string" || !REF.test(p.order)) return json({ error: "bad_request" }, 400);
   const at = Math.floor(Date.now() / 1000);
+  if (paid) return pelamxPro(env, p, paid, at);
+  const id = `pelamx_${p.order}`;
   await env.DB.prepare(
     `INSERT OR IGNORE INTO subscriptions(id, customer_id, status, period_end, license_key, install_id, txn, event_at, plan, created_at, email, ref)
      VALUES (?1, 'pelamx', 'active', ?2, ?3, NULL, NULL, ?4, 'day', ?5, ?6, ?7)`,
@@ -274,6 +277,44 @@ async function dayPassCallback(req: Request, env: LicenseEnv): Promise<Response>
     .run();
   const row = await env.DB.prepare("SELECT license_key, period_end FROM subscriptions WHERE id = ?1").bind(id).first<{ license_key: string; period_end: number }>();
   return row === null ? json({ error: "not_issued" }, 500) : json({ licence_key: row.license_key, expires_at: row.period_end });
+}
+
+/** Pro paid from a pelamx PLX balance (on its own or as the bubbleTranslate + deskMonk bundle). */
+const PELAMX_PLANS: Record<string, { plan: "monthly" | "yearly"; days: number }> = {
+  pro_monthly: { plan: "monthly", days: 30 },
+  pro_yearly: { plan: "yearly", days: 365 },
+};
+
+/** One Pro key per pelamx account, like a plx renewal: paying again extends the same key from where it ends (or from
+ *  now if it lapsed). An order already applied returns the key without extending it again, so pelamx may retry. */
+async function pelamxPro(env: LicenseEnv, p: any, paid: { plan: "monthly" | "yearly"; days: number }, at: number): Promise<Response> {
+  const db = env.DB;
+  const user = typeof p.user === "string" ? p.user.slice(0, 254).toLowerCase() : null;
+  if (!user) return json({ error: "bad_request" }, 400);
+  type Row = { id: string; license_key: string; period_end: number; ref: string | null };
+  const done = await db.prepare("SELECT license_key, period_end FROM subscriptions WHERE customer_id = 'pelamx' AND ref = ?1").bind(p.order).first<Row>();
+  if (done) return json({ licence_key: done.license_key, expires_at: done.period_end, already: true });
+  // shortcut: `ref` holds only the latest order, so a retry of an older order after a newer one would extend again;
+  // pelamx keeps each delivered key and does not call back after success. Keep a per-order table if that changes.
+  const mine = await db
+    .prepare("SELECT id, license_key, period_end, ref FROM subscriptions WHERE customer_id = 'pelamx' AND email = ?1 AND plan IN ('monthly', 'yearly') ORDER BY period_end DESC LIMIT 1")
+    .bind(user)
+    .first<Row>();
+  const end = Math.max(at, mine?.period_end ?? 0) + paid.days * 86400;
+  if (mine) {
+    await db.prepare("UPDATE subscriptions SET period_end = ?1, status = 'active', plan = ?2, ref = ?3, txn = ?4, event_at = ?5 WHERE id = ?6")
+      .bind(end, paid.plan, p.order, String(p.charge_ref ?? "").slice(0, 200), new Date(at * 1000).toISOString(), mine.id)
+      .run();
+    return json({ licence_key: mine.license_key, expires_at: end });
+  }
+  const key = newKey();
+  await db.prepare(
+    `INSERT INTO subscriptions(id, customer_id, status, period_end, license_key, install_id, txn, event_at, plan, created_at, email, ref)
+     VALUES (?1, 'pelamx', 'active', ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9)`,
+  )
+    .bind(`pelamx_${p.order}`, end, key, String(p.charge_ref ?? "").slice(0, 200), new Date(at * 1000).toISOString(), paid.plan, at, user, p.order)
+    .run();
+  return json({ licence_key: key, expires_at: end });
 }
 
 /** pelamx signs the raw body: hex HMAC-SHA256 with the shared secret, in `x-plx-signature`. */
@@ -432,7 +473,7 @@ async function account(req: Request, env: LicenseEnv): Promise<Response> {
     periodEnd: sub.period_end,
     devices: sub.devices,
     maxDevices: MAX_DEVICES,
-    paddle: sub.customer_id !== "manual" && sub.customer_id !== "plx",
+    paddle: sub.customer_id !== "manual" && sub.customer_id !== "plx" && sub.customer_id !== "pelamx",
     plx: sub.customer_id === "plx",
   });
 }

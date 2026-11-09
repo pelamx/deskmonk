@@ -336,7 +336,7 @@ test("pelamx day pass: signed callback issues one day key, old apps read it as f
     handleLicense(new Request("https://deskmonk.app/api/plx-balance/callback", { method: "POST", body: b, headers: { "x-plx-signature": s } }), env, "/api/plx-balance/callback");
   expect(await plxSignatureOk(body, await sig(body), "s3cret")).toBe(true);
   expect((await call(body, "00" + (await sig(body)).slice(2)))!.status).toBe(401);
-  expect((await call(body.replace("day_pass", "pro_yearly"), await sig(body.replace("day_pass", "pro_yearly"))))!.status).toBe(400);
+  expect((await call(body.replace("day_pass", "gold"), await sig(body.replace("day_pass", "gold"))))!.status).toBe(400);
   const first: any = await (await call(body, await sig(body)))!.json();
   expect(first.licence_key).toMatch(/^DM(-[A-HJ-NP-Z2-9]{4}){3}$/);
   expect(first.expires_at - Math.floor(Date.now() / 1000)).toBeGreaterThan(86000);
@@ -347,6 +347,36 @@ test("pelamx day pass: signed callback issues one day key, old apps read it as f
   // The claim link goes to pelamx with a fresh order.
   const r = (await handleLicense(new Request("https://deskmonk.app/day-pass"), env, "/day-pass"))!;
   expect(r.headers.get("location")).toMatch(/^https:\/\/pelamx\.com\/claim\?app=deskmonk&order=[0-9a-f]{32}&return=/);
+});
+
+test("pelamx Pro paid with PLX: one key per account, renewals extend it, retries do not", async () => {
+  const env = { DB: memoryDb(), PARTNER_DM_SECRET: "s3cret" } as any;
+  const sig = async (b: string) => {
+    const k = await crypto.subtle.importKey("raw", new TextEncoder().encode("s3cret"), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    return [...new Uint8Array(await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(b)))].map((x) => x.toString(16).padStart(2, "0")).join("");
+  };
+  const pay = async (order: string, plan: string, user = "A@b.co") => {
+    const b = JSON.stringify({ order, user, app_id: "deskmonk", plan, charge_ref: `partner:bundle:${order}` });
+    const r = await handleLicense(new Request("https://deskmonk.app/api/plx-balance/callback", { method: "POST", body: b, headers: { "x-plx-signature": await sig(b) } }), env, "/api/plx-balance/callback");
+    return (await r!.json()) as any;
+  };
+  const now = Math.floor(Date.now() / 1000);
+  const o1 = "1".repeat(32), o2 = "2".repeat(32);
+  const first = await pay(o1, "pro_monthly");
+  expect(first.licence_key).toMatch(/^DM(-[A-HJ-NP-Z2-9]{4}){3}$/);
+  expect(first.expires_at - now).toBeGreaterThanOrEqual(30 * 86400 - 5);
+  // Retrying the same order neither extends nor issues a second key.
+  const again = await pay(o1, "pro_monthly");
+  expect([again.licence_key, again.expires_at]).toEqual([first.licence_key, first.expires_at]);
+  // Paying again (yearly, same account in another case) extends the same key from its end.
+  const renew = await pay(o2, "pro_yearly", "a@B.co");
+  expect(renew.licence_key).toBe(first.licence_key);
+  expect(renew.expires_at).toBe(first.expires_at + 365 * 86400);
+  // The app reads it as Pro, not as a day pass.
+  const v: any = await (await handleLicense(new Request("https://deskmonk.app/api/license/validate", { method: "POST", body: JSON.stringify({ key: first.licence_key, install_id: "pc1" }) }), env, "/api/license/validate"))!.json();
+  expect(v).toEqual({ key: first.licence_key, pro_until: renew.expires_at });
+  // Another account gets its own key.
+  expect((await pay("3".repeat(32), "pro_monthly", "c@d.co")).licence_key).not.toBe(first.licence_key);
 });
 
 test("refund: the last completed payment in full, then cancel at once", async () => {
