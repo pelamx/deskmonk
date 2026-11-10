@@ -63,11 +63,18 @@ export default {
     return (await handleAdmin(req, env, path)) ?? new Response(null, { status: 404 });
   },
 
+  // One every-minute cron runs both jobs: the free plan's 5 cron triggers are all used, and pelamx.com needed one.
   async scheduled(event: ScheduledController, env: Env): Promise<void> {
-    if (event.cron === "* * * * *") await sweepInvoices(env);
-    else await weekly(env);
+    const jobs = [sweepInvoices(env), isWeeklySlot(event.scheduledTime) ? weekly(env) : null];
+    for (const r of await Promise.allSettled(jobs)) if (r.status === "rejected") throw r.reason;
   },
 } satisfies ExportedHandler<Env>;
+
+/** Monday 08:00 UTC: the weekly summary mail's minute. */
+export const isWeeklySlot = (ms: number): boolean => {
+  const t = new Date(ms);
+  return t.getUTCDay() === 1 && t.getUTCHours() === 8 && t.getUTCMinutes() === 0;
+};
 
 export interface Event {
   install_id: string;

@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { compareVersions, esc, handleAdmin, hardwareHtml, humanSize, mobileCard, mobileLive, worldMap } from "../src/admin";
-import { insert, parseEvent } from "../src/index";
+import { insert, isWeeklySlot, parseEvent } from "../src/index";
 import { handleLicense, inCidr, mayActivate, plxSignatureOk, refundLast, newKey, periodEnd, planOf, verifySignature } from "../src/license";
 import { handleMail, keyMail, weekNumbers, weeklyText } from "../src/mail";
 import { buyPage, js, pickLang } from "../src/pages";
@@ -548,4 +548,11 @@ test("plx: an invoice turns Pro once paid on the chain, a second payment extends
   } finally {
     globalThis.fetch = real;
   }
+});
+
+test("the every-minute cron sends the weekly mail only at Monday 08:00 UTC", () => {
+  expect(isWeeklySlot(Date.UTC(2026, 10, 9, 8, 0, 30))).toBe(true); // Mon 9 Nov 2026 08:00:30
+  expect(isWeeklySlot(Date.UTC(2026, 10, 9, 8, 1))).toBe(false);
+  expect(isWeeklySlot(Date.UTC(2026, 10, 9, 7, 0))).toBe(false);
+  expect(isWeeklySlot(Date.UTC(2026, 10, 10, 8, 0))).toBe(false); // Tuesday
 });

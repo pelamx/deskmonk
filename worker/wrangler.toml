@@ -24,9 +24,10 @@ binding = "DB"
 database_name = "deskmonk"
 database_id = "e0bfa82a-e5c0-4b68-ade8-4c5fad7b1af2"
 
-# Monday 08:00 UTC: the weekly summary mail (src/mail.ts). Every minute: looks for plx payments whose page was closed (src/plx.ts).
+# One cron (the free plan's 5 are shared with pelamx.com and bubbleTranslate): every minute it looks for plx payments
+# whose page was closed (src/plx.ts), and at Monday 08:00 UTC it also sends the weekly summary mail (src/mail.ts).
 [triggers]
-crons = ["0 8 * * 1", "* * * * *"]
+crons = ["* * * * *"]
 
 # Secret, not here: ADMIN_TOKEN (wrangler secret put ADMIN_TOKEN), the /admin password for user "admin".
 
