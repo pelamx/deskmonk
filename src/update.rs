@@ -44,6 +44,10 @@ pub fn platform() -> String {
 /// `downloading` hears the version first, so the window can show it while that runs.
 /// None: up to date, offline, no site configured, or the manifest isn't genuine.
 pub fn check(install_it: bool, downloading: impl FnOnce(&str)) -> Option<Found> {
+    // Store policy 10.2.5: a Microsoft Store copy updates only through the Store, so it doesn't even look.
+    if std::env::current_exe().is_ok_and(|exe| from_store(&exe)) {
+        return None;
+    }
     let site = crate::plan::URL?;
     // Each platform's own file (its release machine writes only that one); update.json is the Macs' older one.
     let signed = |path: &str| Some((fetch(&format!("{site}{path}"), 64 << 10)?, fetch(&format!("{site}{path}.sig"), 1 << 10)?));
@@ -170,6 +174,11 @@ fn target() -> Option<PathBuf> {
         unold(&exe)
     };
     writable(target.parent()?).then_some(target)
+}
+
+/// A Microsoft Store (MSIX) install: Windows puts every package under a `WindowsApps` folder, on any drive.
+pub fn from_store(exe: &Path) -> bool {
+    cfg!(windows) && exe.components().any(|c| c.as_os_str().eq_ignore_ascii_case("WindowsApps"))
 }
 
 /// `.<name>.old` → `<name>`: after an update, Linux's /proc/self/exe names the renamed old file, so "Restart now", the
@@ -331,6 +340,13 @@ mod tests {
         let other = hex(SigningKey::from_bytes(&[8; 32]).verifying_key().as_bytes());
         assert!(entry_for(manifest, &sig, &other, "macos", "0.5.0").is_none());
         assert!(entry_for(manifest, "zz", &public, "macos", "0.5.0").is_none());
+    }
+
+    #[test]
+    fn store_installs_never_update() {
+        let store = Path::new(r"C:\Program Files\WindowsApps\p3l4mx.deskMonk_0.5.16.0_x64__abc\deskmonk.exe");
+        assert_eq!(from_store(store), cfg!(windows));
+        assert!(!from_store(Path::new(r"C:\Users\me\deskMonk\deskmonk.exe")));
     }
 
     #[test]
