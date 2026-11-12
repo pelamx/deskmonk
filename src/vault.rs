@@ -106,6 +106,9 @@ pub fn encrypt(src: &Path, password: &str, done: &AtomicU64) -> Result<PathBuf, 
         }
         tar.into_inner()?;
         sealer.finish()?;
+        // On the disk before the original is overwritten (which is synced): a crash must not leave neither copy.
+        // Opened for writing, as Windows flushes only a writable handle.
+        fs::OpenOptions::new().write(true).open(&part)?.sync_all()?;
         // Read back before anyone deletes the original: every chunk must open with this password.
         io::copy(&mut open(&part, password, done).map_err(io::Error::other)?, &mut io::sink())?;
         Ok(())
@@ -166,12 +169,18 @@ pub fn decrypt(vault: &Path, password: &str, done: &AtomicU64) -> Result<PathBuf
 }
 
 /// Deletes the unencrypted original for good after encrypting: each file is overwritten with zeros, then removed.
-/// Not the Trash, which would keep a readable copy. Symlinks are removed, not followed.
+/// Not the Trash, which would keep a readable copy. Symlinks are removed, not followed, and a hard-linked file is only
+/// removed: its bytes are also another file's, outside `src`, which zeros would ruin.
 // shortcut: on SSDs and copy-on-write file systems (Btrfs, APFS) old blocks may survive the overwrite; full-disk encryption covers that.
 pub fn destroy(src: &Path) -> io::Result<()> {
     for entry in walkdir::WalkDir::new(src).into_iter().flatten().filter(|e| e.file_type().is_file()) {
+        let Ok(meta) = entry.metadata() else { continue };
+        #[cfg(unix)]
+        if std::os::unix::fs::MetadataExt::nlink(&meta) > 1 {
+            continue;
+        }
         if let Ok(mut file) = fs::OpenOptions::new().write(true).open(entry.path()) {
-            let len = entry.metadata().map_or(0, |m| m.len());
+            let len = meta.len();
             let zeros = vec![0u8; CHUNK];
             let mut left = len;
             while left > 0 {
@@ -312,6 +321,21 @@ mod tests {
         assert_eq!(fs::read_to_string(&file).unwrap(), "hello");
         destroy(&dir.join("orig")).unwrap();
         assert!(!dir.join("orig").exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn destroy_leaves_a_hard_linked_file_elsewhere_intact() {
+        let dir = std::env::temp_dir().join(format!("deskmonk-vault-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("Secret")).unwrap();
+        fs::write(dir.join("elsewhere.txt"), "keep me").unwrap();
+        fs::hard_link(dir.join("elsewhere.txt"), dir.join("Secret/link.txt")).unwrap();
+        fs::write(dir.join("Secret/own.txt"), "x").unwrap();
+        destroy(&dir.join("Secret")).unwrap();
+        assert!(!dir.join("Secret").exists());
+        assert_eq!(fs::read_to_string(dir.join("elsewhere.txt")).unwrap(), "keep me");
         fs::remove_dir_all(&dir).unwrap();
     }
 }

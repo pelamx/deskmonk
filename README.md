@@ -22,8 +22,8 @@ Silmeden önce ne kadar alan kazanılacağını gösterir. macOS, Linux ve Windo
 
 Her dosya tek bir kategoride listelenir, yani boyutlar iki kez sayılmaz. Sembolik linkler takip edilmez.
 `.git` ve `node_modules` klasörlerine hiç girilmez. Silme işlemi arka planda çalışır ve arayüz donmaz.
-**Gereksiz** kategorisi (önbellekler, çöp kutusu, geçici dosyalar) kalıcı silinir, çünkü çöpe taşımak yer açmaz.
-Kopyalar, eski indirmeler ve büyük dosyalar geri alınabilsin diye çöp kutusuna taşınır. Salt okunur klasörler de silinir.
+Önbellekler ve çöp kutusu kalıcı silinir, çünkü çöpe taşımak yer açmaz. Geri kalan her şey (adından gereksiz sayılan
+`.bak .old .log …` dosyaları, kopyalar, eski indirmeler, büyük dosyalar) geri alınabilsin diye çöp kutusuna taşınır. Salt okunur klasörler de silinir.
 TUI'de `d` aynı kuralla temizler, `D` her şeyi kalıcı siler (sunucularda çöp kutusu yer açmaz).
 
 ## İndirme

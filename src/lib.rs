@@ -106,10 +106,12 @@ impl Undo {
     }
 }
 
-/// Whether deleting this item removes it for good. Junk (caches, the trash, temp files) is removed for good:
-/// moving it to the trash frees no space and caches regenerate anyway. The user's own files go to the trash.
+/// Whether deleting this item removes it for good. Caches and the trash are removed for good: moving them to the
+/// trash frees no space and caches regenerate anyway. Everything else goes to the trash, junk by name (.bak, .old,
+/// .log, .part …) too: in the user's folders such a file may be their only backup.
 pub fn is_permanent(item: &Item, permanent: bool) -> bool {
-    permanent || item.category == scan::Category::Junk || scan::is_in_trash(&item.path)
+    static ROOTS: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
+    permanent || scan::is_in_trash(&item.path) || ROOTS.get_or_init(scan::junk_roots).iter().any(|r| item.path.starts_with(r))
 }
 
 impl Deletion {
@@ -360,6 +362,8 @@ pub fn scan_default(
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     #[test]
     fn failed_copies_rejoin_their_group_and_put_back_restores_the_list() {
         use super::scan::{Category::*, Item};
@@ -436,6 +440,17 @@ mod tests {
         assert!(items.is_empty() && done.freed == 0);
         assert!(!done.failed[0].selected);
         assert!(done.first_error.unwrap().starts_with(&done.failed[0].name()));
+    }
+
+    #[test]
+    fn only_caches_and_the_trash_are_removed_for_good() {
+        use super::scan::{Category, Item, junk_roots};
+        let item = |path: PathBuf| Item { path, size: 1, category: Category::Junk, group: 0, selected: true };
+        // Junk by name in the user's folders may be their only backup: it goes to the trash.
+        let backup = dirs::document_dir().unwrap_or_default().join("thesis.docx.bak");
+        assert!(!super::is_permanent(&item(backup.clone()), false));
+        assert!(super::is_permanent(&item(backup), true));
+        assert!(super::is_permanent(&item(junk_roots()[0].join("com.example.app")), false));
     }
 
     #[cfg(unix)]

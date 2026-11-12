@@ -215,6 +215,8 @@ pub fn scan(
     let mut locked: HashSet<PathBuf> = HashSet::new(); // the same and not ours: their content cannot be deleted at all
     let mut stuck: HashSet<PathBuf> = HashSet::new(); // junk items with such a folder inside
     let mut last_report = Instant::now();
+    #[cfg(unix)]
+    let mut inodes: HashSet<(u64, u64)> = HashSet::new(); // files with more than one name (hard links) seen so far
     // The whole trash is one item; caches are one item per app folder.
     let junk_key = |path: &Path| {
         let (jroot, rel) = places.junk.iter().find_map(|j| Some((j, path.strip_prefix(j).ok()?)))?;
@@ -270,6 +272,15 @@ pub fn scan(
             }
             let Ok(meta) = entry.metadata() else { continue };
             progress.fetch_add(1, Ordering::Relaxed);
+            // Another name (hard link) of a file already seen: deleting it frees nothing, and its size was counted.
+            // shortcut: Unix only, std has no stable file id on Windows, where hard links in user folders are rare.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                if meta.nlink() > 1 && !inodes.insert((meta.dev(), meta.ino())) {
+                    continue;
+                }
+            }
             let path = entry.into_path();
             let size = meta.len();
             if let Some(key) = junk_key(&path) {
@@ -313,7 +324,8 @@ pub fn scan(
                 p.components()
                     .any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
             });
-            if size >= DUP_MIN && !hidden && !path.ancestors().any(|a| repos.contains(a)) {
+            let packaged = cfg!(target_os = "macos") && in_package(rel);
+            if size >= DUP_MIN && !hidden && !packaged && !path.ancestors().any(|a| repos.contains(a)) {
                 by_size.entry(size).or_default().push(path);
             }
         }
@@ -359,6 +371,16 @@ pub fn scan(
     flagged.sort_by_key(|i| std::cmp::Reverse(i.size));
     items.extend(flagged);
     items
+}
+
+/// Whether `rel` lies inside a folder macOS shows as one file (a package: Logic or GarageBand project, iMovie or
+/// Photos library, app), so a copy there is part of that document. A name ending in digits ("Trip 2024.05") is no package.
+fn in_package(rel: &Path) -> bool {
+    rel.parent().is_some_and(|p| {
+        p.components().any(|c| {
+            Path::new(c.as_os_str()).extension().and_then(|e| e.to_str()).is_some_and(|e| e.bytes().all(|b| b.is_ascii_alphabetic()))
+        })
+    })
 }
 
 /// Whether this user may not create or remove entries in the folder right now.
@@ -496,6 +518,28 @@ mod tests {
         assert_eq!(progress.load(Ordering::Relaxed), 12); // node_modules and .git not walked
         assert_eq!(items.len(), 6);
         assert_eq!(human_size(1536), "1.5 KB");
+    }
+
+    #[test]
+    fn package_contents_are_not_copies() {
+        assert!(in_package(Path::new("Music/Song.logicx/Media/Audio Files/take.wav")));
+        assert!(in_package(Path::new("iMovie Library.imovielibrary/Event/clip.mov")));
+        assert!(!in_package(Path::new("Pictures/Trip 2024.05/a.jpg")));
+        assert!(!in_package(Path::new("Documents/report.pdf")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hard_link_is_not_a_copy() {
+        let dir = std::env::temp_dir().join(format!("deskmonk-links-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("a.bin"), vec![7u8; 40_000]).unwrap();
+        fs::hard_link(dir.join("a.bin"), dir.join("b.bin")).unwrap();
+        let places = Places { trash: None, downloads: None, junk: vec![], user: vec![dir.clone()], app_data: vec![] };
+        let items = scan(&[&dir], &places, &AtomicUsize::new(0), |_, _| {});
+        fs::remove_dir_all(&dir).unwrap();
+        assert!(items.is_empty(), "{:?}", items.iter().map(|i| &i.path).collect::<Vec<_>>());
     }
 
     #[cfg(unix)]

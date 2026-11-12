@@ -2743,9 +2743,9 @@ impl App {
                     ui.label(RichText::new(tf!("{n} dosya seçildi", "{n} files selected", "{n} archivos seleccionados")).strong());
                     let status = if self.status.is_empty() {
                         t(
-                            "Gereksiz dosyalar kalıcı silinir, diğerleri çöp kutusuna taşınır.",
-                            "Junk is deleted for good, everything else goes to the trash.",
-                            "Los archivos basura se borran definitivamente; el resto va a la papelera.",
+                            "Önbellekler ve çöp kutusu kalıcı silinir, diğerleri çöp kutusuna taşınır.",
+                            "Caches and the trash are deleted for good, everything else goes to the trash.",
+                            "Las cachés y la papelera se borran definitivamente; el resto va a la papelera.",
                         )
                     } else {
                         &self.status
@@ -3132,9 +3132,9 @@ impl eframe::App for App {
                 ui.label(tf!("{n} öğe, toplam {}.", "{n} items, {} in total.", "{n} elementos, {} en total.", human_size(size)));
                 if perm_n > 0 {
                     ui.label(RichText::new(tf!(
-                        "• {perm_n} gereksiz öğe ({}) kalıcı olarak silinecek. Önbellekler gerektiğinde yeniden oluşur.",
-                        "• {perm_n} junk items ({}) will be deleted for good. Caches are rebuilt when needed.",
-                        "• {perm_n} elementos basura ({}) se borrarán definitivamente. Las cachés se regeneran cuando hace falta.",
+                        "• {perm_n} önbellek ve çöp öğesi ({}) kalıcı olarak silinecek. Önbellekler gerektiğinde yeniden oluşur.",
+                        "• {perm_n} cache and trash items ({}) will be deleted for good. Caches are rebuilt when needed.",
+                        "• {perm_n} elementos de caché y papelera ({}) se borrarán definitivamente. Las cachés se regeneran cuando hace falta.",
                         human_size(perm_size)
                     )).color(DANGER));
                 }

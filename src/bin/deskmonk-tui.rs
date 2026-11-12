@@ -471,9 +471,9 @@ impl App {
             Prompt::Trash => {
                 let size = human_size(size);
                 tf!(
-                    "{n} öğe ({size}) temizlenecek: gereksiz dosyalar kalıcı silinir, diğerleri çöp kutusuna taşınır. Emin misiniz? [e/h]",
-                    "{n} items ({size}) will be cleaned: junk is deleted for good, the rest goes to the trash. Are you sure? [y/n]",
-                    "Se limpiarán {n} elementos ({size}): los archivos basura se borran definitivamente y el resto va a la papelera. ¿Seguro? [s/n]"
+                    "{n} öğe ({size}) temizlenecek: önbellekler ve çöp kutusu kalıcı silinir, diğerleri çöp kutusuna taşınır. Emin misiniz? [e/h]",
+                    "{n} items ({size}) will be cleaned: caches and the trash are deleted for good, the rest goes to the trash. Are you sure? [y/n]",
+                    "Se limpiarán {n} elementos ({size}): las cachés y la papelera se borran definitivamente y el resto va a la papelera. ¿Seguro? [s/n]"
                 )
             }
             Prompt::Delete => {
