@@ -5,9 +5,9 @@
     "version": "0.5.15"
   },
   "macos": {
-    "sha256": "63fc4d7256381cbd054627fa1e5c0ec23b6500f5656a8d352815acc0229b0203",
-    "url": "/downloads/deskMonk-0.5.15-macos.dmg",
-    "version": "0.5.15"
+    "sha256": "baeab7eb06da611f0335c0b416e249e7756b1c53564819b5c20a6a0ac539feca",
+    "url": "/downloads/deskMonk-0.5.16-macos.dmg",
+    "version": "0.5.16"
   },
   "windows-x86_64": {
     "sha256": "3abde31cb18247469a8e1e363b0f3accc811f91f1d1e5248cf48cc3c8c1fb944",
