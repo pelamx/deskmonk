@@ -189,42 +189,46 @@ export async function sweepInvoices(env: LicenseEnv): Promise<void> {
 
 async function markPaid(env: LicenseEnv, inv: Invoice, signature: string): Promise<Invoice> {
   const db = env.DB;
-  // signature is UNIQUE: one transaction carrying two invoices' references pays only one of them.
-  try {
-    const done = await db.prepare("UPDATE plx_invoices SET signature = ?1, paid_at = ?2 WHERE ref = ?3 AND signature IS NULL").bind(signature, now(), inv.ref).run();
-    if (!done.meta?.changes) return (await db.prepare("SELECT * FROM plx_invoices WHERE ref = ?1").bind(inv.ref).first<Invoice>())!;
-  } catch {
-    return inv;
-  }
   const days = DAYS[inv.plan] * 86400;
   // Renewal: the key given on /account, else this computer's earlier plx license. Only plx ones: Paddle's next
   // webhook would set its own date again.
+  type Sub = { id: string; license_key: string };
   const existing = inv.license_key
-    ? await db.prepare("SELECT id, license_key, period_end FROM subscriptions WHERE license_key = ?1 AND customer_id = 'plx'").bind(inv.license_key).first<{ id: string; license_key: string; period_end: number }>()
+    ? await db.prepare("SELECT id, license_key FROM subscriptions WHERE license_key = ?1 AND customer_id = 'plx'").bind(inv.license_key).first<Sub>()
     : inv.install_id
-      ? await db.prepare("SELECT id, license_key, period_end FROM subscriptions WHERE install_id = ?1 AND customer_id = 'plx' ORDER BY period_end DESC LIMIT 1")
-          .bind(inv.install_id)
-          .first<{ id: string; license_key: string; period_end: number }>()
+      ? await db.prepare("SELECT id, license_key FROM subscriptions WHERE install_id = ?1 AND customer_id = 'plx' ORDER BY period_end DESC LIMIT 1").bind(inv.install_id).first<Sub>()
       : null;
-  let key: string;
-  if (existing !== null) {
-    key = existing.license_key;
-    await db.prepare("UPDATE subscriptions SET period_end = ?1, status = 'active', plan = ?2, txn = ?3, event_at = ?4 WHERE id = ?5")
-      .bind(Math.max(existing.period_end, now()) + days, inv.plan, signature, new Date().toISOString(), existing.id)
-      .run();
-  } else {
-    key = newKey();
-    await db.prepare(
-      `INSERT INTO subscriptions(id, customer_id, status, period_end, license_key, install_id, txn, event_at, plan, created_at, email, ref)
-       VALUES (?1, 'plx', 'active', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`,
-    )
-      .bind(`plx_${inv.ref}`, now() + days, key, inv.install_id, signature, new Date().toISOString(), inv.plan, now(), inv.email, inv.ref)
-      .run();
-    if (inv.email !== null) await sendMail(env, { to: inv.email, ...keyMail(key, inv.plan), replyTo: env.OWNER_EMAIL });
-  }
+  const key = existing?.license_key ?? newKey();
+  const at = now(), iso = new Date().toISOString();
+  // One D1 batch is one transaction: the payment is never recorded without its key. The license statements apply only
+  // while this transaction is the invoice's payment, so a repeated check never extends twice.
+  // signature is UNIQUE: one transaction carrying two invoices' references pays only one of them (the batch fails).
+  const paidHere = (ref: string, sig: string) => `EXISTS (SELECT 1 FROM plx_invoices WHERE ref = ${ref} AND signature = ${sig})`;
+  const stmts = [
+    db.prepare("UPDATE plx_invoices SET signature = ?1, paid_at = ?2, license_key = ?3 WHERE ref = ?4 AND signature IS NULL").bind(signature, at, key, inv.ref),
+    existing
+      ? db.prepare(`UPDATE subscriptions SET period_end = MAX(period_end, ?1) + ?2, status = 'active', plan = ?3, txn = ?4, event_at = ?5
+                    WHERE id = ?6 AND txn IS NOT ?4 AND ${paidHere("?7", "?4")}`)
+          .bind(at, days, inv.plan, signature, iso, existing.id, inv.ref)
+      : db.prepare(`INSERT OR IGNORE INTO subscriptions(id, customer_id, status, period_end, license_key, install_id, txn, event_at, plan, created_at, email, ref)
+                    SELECT ?1, 'plx', 'active', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10 WHERE ${paidHere("?10", "?5")}`)
+          .bind(`plx_${inv.ref}`, at + days, key, inv.install_id, signature, iso, inv.plan, at, inv.email, inv.ref),
+  ];
   if (inv.install_id !== null) {
-    await db.prepare("INSERT OR IGNORE INTO activations(license_key, install_id, ts) VALUES (?1, ?2, ?3)").bind(key, inv.install_id, now()).run();
+    stmts.push(
+      db.prepare(`INSERT OR IGNORE INTO activations(license_key, install_id, ts) SELECT ?1, ?2, ?3 WHERE ${paidHere("?4", "?5")}`)
+        .bind(key, inv.install_id, at, inv.ref, signature),
+    );
   }
-  await db.prepare("UPDATE plx_invoices SET license_key = ?1 WHERE ref = ?2").bind(key, inv.ref).run();
-  return { ...inv, signature, license_key: key };
+  try {
+    await db.batch(stmts);
+  } catch (e) {
+    console.error("plx paid", inv.ref, e); // nothing was written; the next poll or the cron tries again
+    return inv;
+  }
+  const row = (await db.prepare("SELECT * FROM plx_invoices WHERE ref = ?1").bind(inv.ref).first<Invoice>())!;
+  if (row.signature === signature && existing === null && inv.email !== null) {
+    await sendMail(env, { to: inv.email, ...keyMail(key, inv.plan), replyTo: env.OWNER_EMAIL });
+  }
+  return row;
 }

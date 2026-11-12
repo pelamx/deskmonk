@@ -16,6 +16,8 @@ export interface Env extends LicenseEnv {
   DB: D1Database;
   ADMIN_TOKEN: string;
   ASSETS: Fetcher;
+  /** Events per IP address (wrangler.toml); unset in tests and `wrangler dev` without it. */
+  EVENTS_LIMIT?: RateLimit;
 }
 
 // Room for an "open" event's hardware list.
@@ -41,6 +43,9 @@ export default {
     if (site !== null) return site;
 
     if (req.method === "POST" && path === "/api/events") {
+      // Anyone can post here, and each event is a D1 write: a script must not use up the writes licenses need.
+      const ip = req.headers.get("CF-Connecting-IP") ?? "";
+      if (env.EVENTS_LIMIT && !(await env.EVENTS_LIMIT.limit({ key: ip })).success) return new Response("too many events", { status: 429 });
       const body = await req.text();
       if (body.length > MAX_BODY) return new Response("body too large", { status: 400 });
       let ev: Event;

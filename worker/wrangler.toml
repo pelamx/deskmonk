@@ -24,6 +24,13 @@ binding = "DB"
 database_name = "deskmonk"
 database_id = "e0bfa82a-e5c0-4b68-ade8-4c5fad7b1af2"
 
+# /api/events per IP address (src/index.ts): a script posting events must not use up the D1 writes that Paddle webhooks
+# and license checks need. Generous, as offices and phone networks put many devices behind one address.
+[[ratelimits]]
+name = "EVENTS_LIMIT"
+namespace_id = "4817"
+simple = { limit = 120, period = 60 }
+
 # One cron (the free plan's 5 are shared with pelamx.com and bubbleTranslate): every minute it looks for plx payments
 # whose page was closed (src/plx.ts), and at Monday 08:00 UTC it also sends the weekly summary mail (src/mail.ts).
 [triggers]

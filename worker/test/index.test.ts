@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { compareVersions, esc, handleAdmin, hardwareHtml, humanSize, mobileCard, mobileLive, worldMap } from "../src/admin";
-import { insert, isWeeklySlot, parseEvent } from "../src/index";
+import worker, { insert, isWeeklySlot, parseEvent } from "../src/index";
 import { handleLicense, inCidr, mayActivate, plxSignatureOk, refundLast, newKey, periodEnd, planOf, verifySignature } from "../src/license";
 import { handleMail, keyMail, weekNumbers, weeklyText } from "../src/mail";
 import { buyPage, js, pickLang } from "../src/pages";
@@ -225,14 +225,102 @@ function memoryDb(): any {
   const prepare = (sql: string) => {
     const run = (args: unknown[]) => ({
       first: async () => db.prepare(sql).get(...args) ?? null,
+      now: () => ({ results: db.prepare(sql).all(...args) }),
       all: async () => ({ results: db.prepare(sql).all(...args) }),
       run: async () => ({ meta: { changes: Number(db.prepare(sql).run(...args).changes) } }),
       raw: async () => db.prepare(sql).all(...args).map((r: object) => Object.values(r)),
     });
     return { bind: (...args: unknown[]) => run(args), ...run([]) };
   };
-  return { prepare, exec: (sql: string) => db.exec(sql), batch: async (stmts: any[]) => Promise.all(stmts.map((st) => st.all())) };
+  // Like D1: a batch is one transaction, all or nothing (run without a pause, so batches never interleave).
+  const batch = async (stmts: any[]) => {
+    db.exec("BEGIN");
+    try {
+      const out = stmts.map((st) => st.now());
+      db.exec("COMMIT");
+      return out;
+    } catch (e) {
+      db.exec("ROLLBACK");
+      throw e;
+    }
+  };
+  return { prepare, exec: (sql: string) => db.exec(sql), batch };
 }
+
+test("events: a sender over the limit is refused before anything is written", async () => {
+  const env = { DB: memoryDb(), EVENTS_LIMIT: { limit: async ({ key }: { key: string }) => ({ success: key !== "6.6.6.6" }) } } as any;
+  const body = `{"install_id":"abc-123","version":"0.5.0","os":"linux","client":"tui","kind":"scan","files":1}`;
+  const post = async (ip: string) =>
+    (await worker.fetch(new Request("https://deskmonk.app/api/events", { method: "POST", body, headers: { "CF-Connecting-IP": ip } }), env, { waitUntil() {} } as any)).status;
+  expect(await post("6.6.6.6")).toBe(429);
+  expect(await post("1.2.3.4")).toBe(204);
+  expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM events").first()).n).toBe(1);
+});
+
+test("the device limit holds when two new computers ask at once", async () => {
+  const env = { DB: memoryDb() } as any;
+  env.DB.exec(`INSERT INTO subscriptions(id, customer_id, status, period_end, license_key, install_id, event_at, plan)
+               VALUES ('s1', 'c1', 'active', 2000000000, 'DM-ABCD-EFGH-JKLM', NULL, '', 'monthly')`);
+  env.DB.exec(`INSERT INTO activations VALUES ('DM-ABCD-EFGH-JKLM', 'pc1', 0), ('DM-ABCD-EFGH-JKLM', 'pc2', 0)`);
+  const ask = async (install: string) =>
+    (await handleLicense(new Request("https://deskmonk.app/api/license/validate", { method: "POST", body: JSON.stringify({ key: "DM-ABCD-EFGH-JKLM", install_id: install }) }), env, "/api/license/validate"))!.status;
+  expect((await Promise.all([ask("pc3"), ask("pc4")])).sort()).toEqual([200, 403]);
+  expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM activations").first()).n).toBe(3);
+  expect(await ask("pc1")).toBe(200); // a computer already on the key keeps working
+});
+
+test("Paddle webhook: the newest state wins, the key is made once, the key mail is retried until it goes out", async () => {
+  const secret = "whsec_test";
+  let mailUp = false;
+  const mails: string[] = [];
+  const real = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init: RequestInit = {}) => {
+    if (url.endsWith("/ips")) return Response.json({ data: { ipv4_cidrs: ["34.232.58.13/32"] } });
+    if (url.endsWith("/customers/ctm_1")) return Response.json({ data: { email: "buyer@example.com" } });
+    if (url.startsWith("https://api.resend.com/")) {
+      mails.push(JSON.parse(String(init.body)).text);
+      return new Response("", { status: mailUp ? 200 : 500 });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  }) as typeof fetch;
+  const env = {
+    DB: memoryDb(), PADDLE_ENV: "production", PADDLE_API_KEY: "k", PADDLE_WEBHOOK_SECRET: secret, PADDLE_PRICE_MONTHLY: "pri_m",
+    RESEND_API_KEY: "r", MAIL_FROM: "deskMonk <support@deskmonk.app>",
+  } as any;
+  const send = async (status: string, occurred: string) => {
+    const body = JSON.stringify({
+      event_type: `subscription.${status}`, occurred_at: occurred,
+      data: { id: "sub_1", customer_id: "ctm_1", status, items: [{ price: { id: "pri_m" } }], created_at: "2026-11-01T00:00:00Z",
+        current_billing_period: { ends_at: "2026-12-01T00:00:00Z" }, custom_data: { install_id: "mac-1" } },
+    });
+    const ts = Math.floor(Date.now() / 1000);
+    const k = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const h1 = [...new Uint8Array(await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(`${ts}:${body}`)))].map((b) => b.toString(16).padStart(2, "0")).join("");
+    const headers = { "Paddle-Signature": `ts=${ts};h1=${h1}`, "CF-Connecting-IP": "34.232.58.13" };
+    return (await handleLicense(new Request("https://deskmonk.app/api/paddle", { method: "POST", body, headers }), env, "/api/paddle"))!.status;
+  };
+  const row = () => env.DB.prepare("SELECT status, period_end, license_key, email FROM subscriptions WHERE id = 'sub_1'").first();
+  try {
+    // Resend is down: Paddle is asked to deliver again, and the email isn't kept, so that delivery mails the key.
+    expect(await send("active", "2026-11-01T00:00:01.000000Z")).toBe(503);
+    const first = await row();
+    expect(first).toMatchObject({ status: "active", period_end: Date.parse("2026-12-01T00:00:00Z") / 1000, email: null });
+    mailUp = true;
+    expect(await send("active", "2026-11-01T00:00:01.000000Z")).toBe(200);
+    expect(await row()).toMatchObject({ license_key: first.license_key, email: "buyer@example.com" });
+    expect(mails).toHaveLength(2);
+    expect(mails[1]).toContain(first.license_key);
+    // Canceled, then an older event arriving late: the newer state stays, the key never changes, no second mail.
+    expect(await send("canceled", "2026-11-05T00:00:00.000000Z")).toBe(200);
+    expect(await send("active", "2026-11-02T00:00:00.000000Z")).toBe(200);
+    expect(await row()).toMatchObject({ status: "canceled", period_end: 0, license_key: first.license_key });
+    expect(mails).toHaveLength(2);
+    // The computer it was bought on holds a place on the key.
+    expect((await env.DB.prepare("SELECT install_id FROM activations WHERE license_key = ?1").bind(first.license_key).all()).results).toEqual([{ install_id: "mac-1" }]);
+  } finally {
+    globalThis.fetch = real;
+  }
+});
 
 test("the key mail carries the key and how to use it", () => {
   const m = keyMail("DM-ABCD-EFGH-JKLM", "yearly");
@@ -515,6 +603,8 @@ test("plx: an invoice turns Pro once paid on the chain, a second payment extends
     const sub = await env.DB.prepare("SELECT * FROM subscriptions WHERE license_key = ?1").bind(paid.key).first();
     expect(sub).toMatchObject({ customer_id: "plx", install_id: "mac-1", txn: "sigA", status: "active" });
     const firstEnd = sub.period_end as number;
+    expect(await order(a.ref)).toEqual(paid); // asking again neither extends nor makes a second key
+    expect((await env.DB.prepare("SELECT period_end FROM subscriptions WHERE license_key = ?1").bind(paid.key).first()).period_end).toBe(firstEnd);
     expect(firstEnd - Date.now() / 1000).toBeGreaterThan(29 * 86400);
     // The app on that computer: Pro, by its install id alone.
     const v = await handleLicense(new Request("https://deskmonk.app/api/license/validate", { method: "POST", body: JSON.stringify({ key: "", install_id: "mac-1" }) }), env, "/api/license/validate");
@@ -532,6 +622,18 @@ test("plx: an invoice turns Pro once paid on the chain, a second payment extends
     payments[c.reference] = { sig: "sigB", units: "25000000" };
     expect(await order(c.ref)).toEqual({ status: "pending" });
     expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM subscriptions").first()).n).toBe(1);
+
+    // A write failing halfway leaves the invoice unpaid (no payment without a key), and the next check pays it.
+    const d = await invoice({ cycle: "monthly", install: "pc-9" });
+    payments[d.reference] = { sig: "sigD", units: "2500000" };
+    env.DB.exec("ALTER TABLE activations RENAME TO activations_off");
+    expect(await order(d.ref)).toEqual({ status: "pending" });
+    expect(await env.DB.prepare("SELECT signature, license_key FROM plx_invoices WHERE ref = ?1").bind(d.ref).first()).toEqual({ signature: null, license_key: null });
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM subscriptions").first()).n).toBe(1);
+    env.DB.exec("ALTER TABLE activations_off RENAME TO activations");
+    env.DB.exec(`UPDATE plx_invoices SET checked_at = 0`);
+    expect(await order(d.ref)).toMatchObject({ status: "paid", plan: "monthly" });
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM activations WHERE install_id = 'pc-9'").first()).n).toBe(1);
 
     // The pages: the plx button on /buy (only with a wallet set), the QR page, Renew on /account instead of Paddle's portal.
     Object.assign(env, { PADDLE_CLIENT_TOKEN: "t", PADDLE_PRICE_MONTHLY: "m", PADDLE_PRICE_YEARLY: "y" });

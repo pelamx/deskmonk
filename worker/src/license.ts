@@ -199,15 +199,21 @@ async function webhook(req: Request, env: LicenseEnv): Promise<Response> {
       Number.isFinite(created) ? Math.floor(created / 1000) : Math.floor(Date.now() / 1000), ref)
     .run();
   // The buyer's email, asked from Paddle once (subscription events do not carry it): for the admin panel, and the
-  // moment it is first known the buyer is mailed their key, so that mail goes out once per subscription.
+  // moment it is first known the buyer is mailed their key. It is kept only once that mail went out (or mail isn't
+  // set up), so the mail goes out once per subscription; if Resend fails, Paddle is asked to deliver the event again.
+  let mailFailed = false;
   const known = await env.DB.prepare("SELECT email, license_key, plan FROM subscriptions WHERE id = ?1")
     .bind(sub.id)
     .first<{ email: string | null; license_key: string; plan: string }>();
   if (known !== null && known.email === null) {
     const email = await customerEmail(env, sub.customer_id);
     if (email !== null) {
-      await env.DB.prepare("UPDATE subscriptions SET email = ?1 WHERE id = ?2").bind(email, sub.id).run();
-      await sendMail(env, { to: email, ...keyMail(known.license_key, known.plan), replyTo: env.OWNER_EMAIL });
+      const sent = await sendMail(env, { to: email, ...keyMail(known.license_key, known.plan), replyTo: env.OWNER_EMAIL });
+      if (sent || !env.RESEND_API_KEY || !env.MAIL_FROM) {
+        await env.DB.prepare("UPDATE subscriptions SET email = ?1 WHERE id = ?2").bind(email, sub.id).run();
+      } else {
+        mailFailed = true;
+      }
     }
   }
   if (install !== null) {
@@ -217,7 +223,7 @@ async function webhook(req: Request, env: LicenseEnv): Promise<Response> {
       .bind(sub.id, install, Math.floor(Date.now() / 1000))
       .run();
   }
-  return new Response(null, { status: 200 });
+  return new Response(mailFailed ? "key mail failed, deliver again" : null, { status: mailFailed ? 503 : 200 });
 }
 
 async function validate(db: D1Database, key: string, install: string): Promise<Response> {
@@ -234,10 +240,16 @@ async function validate(db: D1Database, key: string, install: string): Promise<R
   const devices = (await db.prepare("SELECT install_id FROM activations WHERE license_key = ?1").bind(sub.license_key).raw<[string]>()).map(([id]) => id);
   if (!mayActivate(devices, install)) return json({ error: "too_many_devices" }, 403);
   if (!devices.includes(install)) {
-    await db
-      .prepare("INSERT OR IGNORE INTO activations(license_key, install_id, ts) VALUES (?1, ?2, ?3)")
-      .bind(sub.license_key, install, Math.floor(Date.now() / 1000))
+    // Counted again inside the insert: two new computers asking at once must not both take the last place.
+    const added = await db
+      .prepare(
+        `INSERT OR IGNORE INTO activations(license_key, install_id, ts)
+         SELECT ?1, ?2, ?3 WHERE (SELECT COUNT(*) FROM activations WHERE license_key = ?1) < ?4`,
+      )
+      .bind(sub.license_key, install, Math.floor(Date.now() / 1000), MAX_DEVICES)
       .run();
+    const there = added.meta?.changes || (await db.prepare("SELECT 1 FROM activations WHERE license_key = ?1 AND install_id = ?2").bind(sub.license_key, install).first());
+    if (!there) return json({ error: "too_many_devices" }, 403);
   }
   // A day key is not Pro: apps before the day pass read pro_until only, so they treat it as the free plan.
   if (sub.plan === "day") return json({ key: sub.license_key, pro_until: 0, day_until: sub.period_end });
