@@ -174,3 +174,8 @@ h2.big { font-size: 2.1rem; margin: .2em 0 .4em; line-height: 1.15; }
                   color: var(--text); background: transparent; border: 1px solid var(--line); }
 .consent button:last-child { color: #fff; border-color: transparent; background: linear-gradient(135deg, var(--brand), var(--brand-2)); }
 .consent button:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+
+/* A slim strip above the header for our other app. */
+.sibling { font-size: 13px; padding-block: 5px; border-bottom: 1px solid var(--line); }
+.sibling a { color: var(--muted); text-decoration: none; }
+.sibling a:hover { color: var(--text); }
