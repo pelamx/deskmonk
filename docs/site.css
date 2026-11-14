@@ -101,6 +101,7 @@ h2.big { font-size: 2.1rem; margin: .2em 0 .4em; line-height: 1.15; }
 .plans { display: grid; gap: 18px; grid-template-columns: 1fr 1fr; margin: 26px auto 0; max-width: 820px; text-align: start; }
 .plan { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 26px; display: flex; flex-direction: column; }
 .plan.pro { border-color: var(--brand); box-shadow: 0 0 0 1px var(--brand), 0 20px 60px rgba(108,99,255,.25); background: linear-gradient(180deg, #231d47, var(--card)); }
+.plan.both { grid-column: 1 / -1; }
 .plan .name { font-weight: 700; font-size: 1.1rem; }
 .plan.pro .name { color: var(--gold); }
 .plan .price { font-size: 2.3rem; font-weight: 800; margin: 6px 0 0; letter-spacing: -.02em; }
